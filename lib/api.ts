@@ -21,13 +21,18 @@ export interface Product {
 
 export type OrderStatus = "reserved" | "payed" | "canceled";
 
-export interface Order {
+export interface OrderItem {
   id: string;
   productId: string;
   quantity: number;
+  product: Product;
+}
+
+export interface Order {
+  id: string;
   status: OrderStatus;
   createdAt: string;
-  product: Product;
+  items: OrderItem[];
 }
 
 export class ApiError extends Error {

@@ -21,7 +21,7 @@ type Section = "dashboard" | "orders" | "products" | "users";
 type DialogState =
   | { type: "user"; user?: User }
   | { type: "product"; product?: Product }
-  | { type: "order" }
+  | { type: "order"; order?: Order }
   | null;
 
 const navigation: { id: Section; label: string; icon: "grid" | "bag" | "package" | "users" }[] = [
@@ -64,6 +64,37 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("fr-FR").format(value);
 }
 
+function parseAriaryPrice(value: string) {
+  const normalized = value.trim().replace(/[^\d.,]/g, "");
+  if (!normalized) return 0;
+
+  const lastSeparator = Math.max(
+    normalized.lastIndexOf("."),
+    normalized.lastIndexOf(","),
+  );
+  if (lastSeparator === -1) return Number(normalized) || 0;
+
+  const groups = normalized.split(/[.,]/);
+  const wholePart = normalized.slice(0, lastSeparator);
+  const fractionalPart = normalized.slice(lastSeparator + 1);
+  const isThousandsSeparator =
+    groups.length > 1 &&
+    groups.slice(1).every((group) => group.length === 3);
+  const amount = isThousandsSeparator
+    ? Number(normalized.replace(/[.,]/g, ""))
+    : Number(
+        `${wholePart.replace(/[.,]/g, "")}.${fractionalPart}`,
+      );
+
+  return Number.isFinite(amount) ? Math.round(amount) : 0;
+}
+
+function formatAriary(value: number) {
+  return `${new Intl.NumberFormat("fr-FR", {
+    maximumFractionDigits: 0,
+  }).format(value)} Ar`;
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("fr-FR", {
     day: "2-digit",
@@ -88,6 +119,8 @@ export default function AdminApp() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
+  const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -182,7 +215,9 @@ export default function AdminApp() {
       ? orders.filter(
           (order) =>
             order.id.toLocaleLowerCase().includes(value) ||
-            order.product?.nom.toLocaleLowerCase().includes(value),
+            order.items.some((item) =>
+              item.product?.nom.toLocaleLowerCase().includes(value),
+            ),
         )
       : orders;
   }, [orders, query]);
@@ -230,6 +265,7 @@ export default function AdminApp() {
   }
 
   async function handleLogout() {
+    setLoggingOut(true);
     setError("");
     try {
       await apiRequest<void>("/auth/logout", { method: "POST" });
@@ -238,9 +274,12 @@ export default function AdminApp() {
       setOrders([]);
       setUsers([]);
       setNotice("");
+      setLogoutDialogOpen(false);
       router.replace("/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "La déconnexion a échoué.");
+    } finally {
+      setLoggingOut(false);
     }
   }
 
@@ -350,15 +389,29 @@ export default function AdminApp() {
     setSaving(true);
     setError("");
     try {
-      await apiRequest<Order>("/orders", {
-        method: "POST",
-        body: JSON.stringify(values),
-      });
+      await apiRequest<Order>(
+        dialog?.type === "order" && dialog.order
+          ? `/orders/${dialog.order.id}`
+          : "/orders",
+        {
+          method:
+            dialog?.type === "order" && dialog.order ? "PATCH" : "POST",
+          body: JSON.stringify(values),
+        },
+      );
       await reloadData(user);
       setDialog(null);
-      setNotice("La commande a été créée.");
+      setNotice(
+        dialog?.type === "order" && dialog.order
+          ? "La commande a été mise à jour."
+          : "La commande a été créée.",
+      );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Impossible de créer la commande.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible d’enregistrer la commande.",
+      );
     } finally {
       setSaving(false);
     }
@@ -446,7 +499,7 @@ export default function AdminApp() {
             <strong>{user.nom}</strong>
             <small>{isAdmin(user) ? "Administrateur" : "Équipe"}</small>
           </span>
-          <button className="icon-button logout-button" onClick={handleLogout} type="button" aria-label="Se déconnecter" title="Se déconnecter">
+          <button className="icon-button logout-button" onClick={() => setLogoutDialogOpen(true)} type="button" aria-label="Se déconnecter" title="Se déconnecter">
             <Icon name="logout" />
           </button>
         </div>
@@ -458,7 +511,7 @@ export default function AdminApp() {
             <Image src="/Logo.jfif.jpg" alt="" width={42} height={42} className="brand-logo" />
             <div><p className="brand-name">Tiako dia Tiako</p><span className="brand-caption">ESPACE ADMIN</span></div>
           </div>
-          <button className="icon-button" onClick={handleLogout} type="button" aria-label="Se déconnecter"><Icon name="logout" /></button>
+          <button className="icon-button" onClick={() => setLogoutDialogOpen(true)} type="button" aria-label="Se déconnecter"><Icon name="logout" /></button>
         </div>
         <nav className="mobile-nav" aria-label="Navigation principale">
           {visibleNavigation.map((item) => (
@@ -522,6 +575,7 @@ export default function AdminApp() {
             <OrdersSection
               orders={filteredOrders}
               onAdd={() => setDialog({ type: "order" })}
+              onEdit={(order) => setDialog({ type: "order", order })}
               onUpdateStatus={updateOrderStatus}
             />
           )}
@@ -562,10 +616,23 @@ export default function AdminApp() {
       )}
       {dialog?.type === "order" && (
         <OrderDialog
+          key={dialog.order?.id ?? "new-order"}
           busy={saving}
-          products={products.filter((product) => product.available > 0)}
+          order={dialog.order}
+          products={products.filter(
+            (product) =>
+              product.available > 0 ||
+              dialog.order?.items.some((item) => item.productId === product.id),
+          )}
           onClose={() => setDialog(null)}
           onSave={saveOrder}
+        />
+      )}
+      {logoutDialogOpen && (
+        <LogoutDialog
+          busy={loggingOut}
+          onClose={() => setLogoutDialogOpen(false)}
+          onConfirm={handleLogout}
         />
       )}
     </div>
@@ -684,7 +751,16 @@ function DashboardSection({
 }) {
   const paidOrders = orders.filter((order) => order.status === "payed");
   const waitingOrders = orders.filter((order) => order.status === "reserved");
-  const soldUnits = paidOrders.reduce((total, order) => total + order.quantity, 0);
+  const totalSales = paidOrders.reduce(
+    (total, order) =>
+      total +
+      order.items.reduce(
+        (orderTotal, item) =>
+          orderTotal + parseAriaryPrice(item.product?.prix ?? "") * item.quantity,
+        0,
+      ),
+    0,
+  );
   const lowStock = products.filter((product) => product.available <= 5);
   const trend = Array.from({ length: 6 }, (_, index) => {
     const month = new Date();
@@ -712,7 +788,7 @@ function DashboardSection({
 
       <section className="stats-grid" aria-label="Indicateurs clés">
         <StatCard label="Commandes totales" value={formatNumber(orders.length)} note={`${formatNumber(waitingOrders.length)} en attente`} icon="bag" tone="pink" />
-        <StatCard label="Commandes payées" value={formatNumber(paidOrders.length)} note={`${formatNumber(soldUnits)} article${soldUnits === 1 ? "" : "s"} vendu${soldUnits === 1 ? "" : "s"}`} icon="check" tone="gold" />
+        <StatCard label="Total des ventes" value={formatAriary(totalSales)} note={`${formatNumber(paidOrders.length)} commande${paidOrders.length === 1 ? "" : "s"} payée${paidOrders.length === 1 ? "" : "s"}`} icon="check" tone="gold" />
         <StatCard label="Produits en boutique" value={formatNumber(products.length)} note={`${formatNumber(lowStock.length)} stock${lowStock.length === 1 ? "" : "s"} à surveiller`} icon="package" tone="lavender" />
         <StatCard label="Comptes équipe" value={formatNumber(isAdmin(user) ? users.length : 1)} note={isAdmin(user) ? "Comptes actifs" : "Votre compte"} icon="users" tone="peach" />
       </section>
@@ -795,10 +871,12 @@ function StatCard({
 function OrdersSection({
   orders,
   onAdd,
+  onEdit,
   onUpdateStatus,
 }: {
   orders: Order[];
   onAdd: () => void;
+  onEdit: (order: Order) => void;
   onUpdateStatus: (order: Order, status: OrderStatus) => void;
 }) {
   return (
@@ -808,17 +886,19 @@ function OrdersSection({
         <button className="btn btn-primary" onClick={onAdd} type="button"><Icon name="plus" /> Nouvelle commande</button>
       </div>
       <div className="table-summary"><span><strong>{formatNumber(orders.length)}</strong> commande{orders.length === 1 ? "" : "s"}</span><span className="table-filter-label"><Icon name="filter" /> Résultats</span></div>
-      <section className="panel table-panel"><OrdersTable orders={orders} onUpdateStatus={onUpdateStatus} /></section>
+      <section className="panel table-panel"><OrdersTable orders={orders} onEdit={onEdit} onUpdateStatus={onUpdateStatus} /></section>
     </>
   );
 }
 
 function OrdersTable({
   orders,
+  onEdit,
   onUpdateStatus,
   compact = false,
 }: {
   orders: Order[];
+  onEdit?: (order: Order) => void;
   onUpdateStatus: (order: Order, status: OrderStatus) => void;
   compact?: boolean;
 }) {
@@ -828,25 +908,36 @@ function OrdersTable({
   return (
     <div className="table-scroll">
       <table className="data-table orders-table">
-        <thead><tr><th>Référence</th><th>Produit</th><th>Date</th><th>Quantité</th><th>Statut</th>{!compact && <th>Action</th>}</tr></thead>
+        <thead><tr><th>Référence</th><th>Produits</th><th>Date</th><th>Qté totale</th><th>Statut</th>{!compact && <th>Action</th>}</tr></thead>
         <tbody>
           {orders.map((order) => (
             <tr key={order.id}>
               <td><span className="order-reference">#{order.id.slice(0, 8).toLocaleUpperCase()}</span></td>
-              <td><span className="table-product"><span className="product-initial">{initials(order.product?.nom ?? "?")}</span><strong>{order.product?.nom ?? "Produit supprimé"}</strong></span></td>
+              <td>
+                <div className="order-products-cell">
+                  {order.items.map((item) => (
+                    <span key={item.id}>
+                      {item.product?.nom ?? "Produit supprimé"} × {item.quantity}
+                    </span>
+                  ))}
+                </div>
+              </td>
               <td className="muted-cell">{formatDate(order.createdAt)}</td>
-              <td><span className="quantity-cell">{order.quantity}</span></td>
+              <td><span className="quantity-cell">{order.items.reduce((total, item) => total + item.quantity, 0)}</span></td>
               <td><StatusBadge status={order.status} /></td>
               {!compact && (
                 <td>
-                  <select
-                    aria-label={`Modifier le statut de la commande ${order.id}`}
-                    className="status-select"
-                    onChange={(event) => onUpdateStatus(order, event.target.value as OrderStatus)}
-                    value={order.status}
-                  >
-                    {Object.entries(statusLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                  </select>
+                  <div className="order-actions">
+                    <select
+                      aria-label={`Modifier le statut de la commande ${order.id}`}
+                      className="status-select"
+                      onChange={(event) => onUpdateStatus(order, event.target.value as OrderStatus)}
+                      value={order.status}
+                    >
+                      {Object.entries(statusLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                    </select>
+                    {onEdit && <button className="text-link" onClick={() => onEdit(order)} type="button">Modifier</button>}
+                  </div>
                 </td>
               )}
             </tr>
@@ -1101,44 +1192,212 @@ function ProductDialog({
 }
 
 interface OrderFormValues {
-  product_id: string;
-  quantity: number;
+  items: { product_id: string; quantity: number }[];
   status: OrderStatus;
 }
 
 function OrderDialog({
   busy,
+  order,
   products,
   onClose,
   onSave,
 }: {
   busy: boolean;
+  order?: Order;
   products: Product[];
   onClose: () => void;
   onSave: (values: OrderFormValues) => void;
 }) {
+  const [items, setItems] = useState(
+    () =>
+      order?.items.map((item) => ({
+        product_id: item.productId,
+        quantity: item.quantity,
+      })) ?? [{ product_id: "", quantity: 1 }],
+  );
+  const [status, setStatus] = useState<OrderStatus>(
+    order?.status ?? "reserved",
+  );
+  const hasAvailableProducts = products.some(
+    (product) => !items.some((item) => item.product_id === product.id),
+  );
+  const hasEmptyProductSelection = items.some(
+    (item) => item.product_id === "",
+  );
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
     onSave({
-      product_id: String(form.get("productId") ?? ""),
-      quantity: Number(form.get("quantity")),
-      status: String(form.get("status") ?? "reserved") as OrderStatus,
+      items,
+      status,
     });
   }
   return (
-    <DialogFrame onClose={onClose} title="Nouvelle commande" subtitle="Enregistrez une commande et réservez le stock correspondant.">
+    <DialogFrame
+      onClose={onClose}
+      title={order ? "Modifier la commande" : "Nouvelle commande"}
+      subtitle={
+        order
+          ? "Ajoutez des produits ou ajustez les quantités de cette commande."
+          : "Sélectionnez plusieurs produits et les quantités à réserver."
+      }
+    >
       <form className="dialog-form" onSubmit={submit}>
-        <label className="form-label" htmlFor="order-product">Produit</label>
-        <select className="field-control" defaultValue="" id="order-product" name="productId" required>
-          <option disabled value="">Choisir un produit</option>
-          {products.map((product) => <option key={product.id} value={product.id}>{product.nom} · {product.available} disponible{product.available === 1 ? "" : "s"}</option>)}
+        <div className="order-items-fields">
+          {items.map((item, index) => {
+            const selectedProduct = products.find(
+              (product) => product.id === item.product_id,
+            );
+            const originalQuantity =
+              order?.items.find(
+                (orderItem) => orderItem.productId === item.product_id,
+              )?.quantity ?? 0;
+            const available =
+              (selectedProduct?.available ?? 0) +
+              (status !== "canceled" && order?.status !== "canceled"
+                ? originalQuantity
+                : 0);
+
+            return (
+              <div className="order-item-fields" key={`order-item-${index}`}>
+                <div>
+                  <label
+                    className="form-label"
+                    htmlFor={`order-product-${index}`}
+                  >
+                    Produit {index + 1}
+                  </label>
+                  <select
+                    className="field-control"
+                    id={`order-product-${index}`}
+                    onChange={(event) =>
+                      setItems((current) =>
+                        current.map((currentItem, currentIndex) =>
+                          currentIndex === index
+                            ? { ...currentItem, product_id: event.target.value }
+                            : currentItem,
+                        ),
+                      )
+                    }
+                    required
+                    value={item.product_id}
+                  >
+                    <option disabled value="">
+                      Choisir un produit
+                    </option>
+                    {products.map((product) => (
+                      <option
+                        disabled={items.some(
+                          (otherItem, otherIndex) =>
+                            otherIndex !== index &&
+                            otherItem.product_id === product.id,
+                        )}
+                        key={product.id}
+                        value={product.id}
+                      >
+                        {product.nom} · {product.available} disponible
+                        {product.available === 1 ? "" : "s"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="order-item-quantity">
+                  <label
+                    className="form-label"
+                    htmlFor={`order-quantity-${index}`}
+                  >
+                    Quantité
+                  </label>
+                  <Input
+                    id={`order-quantity-${index}`}
+                    max={status === "canceled" ? undefined : available}
+                    min="1"
+                    onChange={(event) =>
+                      setItems((current) =>
+                        current.map((currentItem, currentIndex) =>
+                          currentIndex === index
+                            ? {
+                                ...currentItem,
+                                quantity: Number(event.target.value),
+                              }
+                            : currentItem,
+                        ),
+                      )
+                    }
+                    required
+                    type="number"
+                    value={item.quantity}
+                  />
+                </div>
+                {items.length > 1 && (
+                  <button
+                    aria-label={`Retirer le produit ${index + 1}`}
+                    className="text-link remove-order-item"
+                    onClick={() =>
+                      setItems((current) =>
+                        current.filter(
+                          (_, currentIndex) => currentIndex !== index,
+                        ),
+                      )
+                    }
+                    type="button"
+                  >
+                    Retirer
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {products.length === 0 && (
+          <p className="dialog-hint">
+            Aucun produit n’a de stock disponible.
+          </p>
+        )}
+        {hasAvailableProducts && (
+          <button
+            className="text-link add-order-item"
+            disabled={hasEmptyProductSelection}
+            onClick={() =>
+              setItems((current) => [
+                ...current,
+                { product_id: "", quantity: 1 },
+              ])
+            }
+            type="button"
+          >
+            + Ajouter un produit à la commande
+          </button>
+        )}
+        {products.length > 0 && !hasAvailableProducts && (
+          <p className="dialog-hint">
+            Tous les produits disponibles sont déjà dans cette commande.
+          </p>
+        )}
+        <label className="form-label" htmlFor="order-status">
+          Statut {order ? "de la commande" : "initial"}
+        </label>
+        <select
+          className="field-control"
+          id="order-status"
+          onChange={(event) =>
+            setStatus(event.target.value as OrderStatus)
+          }
+          value={status}
+        >
+          <option value="reserved">En attente</option>
+          <option value="payed">Payée</option>
+          <option value="canceled">Annulée</option>
         </select>
-        {products.length === 0 && <p className="dialog-hint">Aucun produit n’a de stock disponible.</p>}
-        <label className="form-label" htmlFor="order-quantity">Quantité</label><Input defaultValue={1} id="order-quantity" min="1" name="quantity" required type="number" />
-        <label className="form-label" htmlFor="order-status">Statut initial</label>
-        <select className="field-control" defaultValue="reserved" id="order-status" name="status"><option value="reserved">En attente</option><option value="payed">Payée</option><option value="canceled">Annulée</option></select>
-        <DialogActions busy={busy} disabled={products.length === 0} onClose={onClose} submitLabel="Créer la commande" />
+        <DialogActions
+          busy={busy}
+          disabled={items.length === 0}
+          onClose={onClose}
+          submitLabel={
+            order ? "Enregistrer les modifications" : "Créer la commande"
+          }
+        />
       </form>
     </DialogFrame>
   );
@@ -1160,6 +1419,64 @@ function DialogFrame({
       <section aria-labelledby="dialog-title" aria-modal="true" className="dialog-card" role="dialog">
         <div className="dialog-header"><div><span className="dialog-eyebrow">TIAKO DIA TIAKO</span><h2 id="dialog-title">{title}</h2><p>{subtitle}</p></div><button className="icon-button dialog-close" onClick={onClose} type="button" aria-label="Fermer"><Icon name="close" /></button></div>
         {children}
+      </section>
+    </div>
+  );
+}
+
+function LogoutDialog({
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => {
+        if (!busy && event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        aria-labelledby="logout-dialog-title"
+        aria-modal="true"
+        className="dialog-card logout-dialog"
+        role="alertdialog"
+      >
+        <div className="dialog-header">
+          <div>
+            <span className="dialog-eyebrow">TIAKO DIA TIAKO</span>
+            <h2 id="logout-dialog-title">Se déconnecter ?</h2>
+            <p>Voulez-vous vraiment quitter votre espace administrateur ?</p>
+          </div>
+        </div>
+        <div className="dialog-actions">
+          <button
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={onClose}
+            type="button"
+          >
+            Annuler
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={onConfirm}
+            type="button"
+          >
+            {busy ? (
+              <>
+                <span className="button-spinner" /> Déconnexion…
+              </>
+            ) : (
+              "Se déconnecter"
+            )}
+          </button>
+        </div>
       </section>
     </div>
   );

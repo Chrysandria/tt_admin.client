@@ -22,6 +22,10 @@ rechargement complet :
 - `/produits` : suivi des produits
 - `/utilisateurs` : gestion des comptes, réservée aux administrateurs
 
+Une commande peut contenir plusieurs produits. Dans le formulaire, ajoutez des
+lignes de produits et leurs quantités ; une commande existante peut ensuite
+être modifiée pour ajuster les quantités ou ajouter des produits.
+
 La racine `/` affiche la connexion. Après authentification, l’utilisateur est
 redirigé vers `/dashboard`.
 
