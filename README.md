@@ -1,36 +1,50 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Tiako dia Tiako — espace admin
 
-## Getting Started
+Interface Next.js responsive pour gérer la boutique : tableau de bord,
+commandes, inventaire et comptes utilisateurs administrateurs.
 
-First, run the development server:
+## Démarrage
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Ouvrir [http://localhost:3000](http://localhost:3000). Démarrer aussi l’API
+NestJS dans `../server` et configurer son accès PostgreSQL, `JWT_SECRET` et
+`CSRF_SECRET` (voir le README du serveur).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+L’application utilise des routes dédiées, accessibles directement et sans
+rechargement complet :
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `/dashboard` : tableau de bord
+- `/commandes` : suivi des commandes
+- `/produits` : suivi des produits
+- `/utilisateurs` : gestion des comptes, réservée aux administrateurs
 
-## Learn More
+La racine `/` affiche la connexion. Après authentification, l’utilisateur est
+redirigé vers `/dashboard`.
 
-To learn more about Next.js, take a look at the following resources:
+Par défaut, le frontend appelle `http://localhost:5000`. Pour une autre adresse,
+définir `NEXT_PUBLIC_API_URL` dans `client/.env.local`, par exemple :
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```env
+NEXT_PUBLIC_API_URL=http://localhost:5000
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Le backend doit autoriser l’origine du frontend et les cookies inter-origines.
+L’authentification utilise le cookie HTTP-only du backend et les mutations
+récupèrent un jeton CSRF avant chaque requête.
 
-## Deploy on Vercel
+Les images produits sont envoyées à l’API NestJS et conservées dans son dossier
+`uploads`; la base ne contient que leur URL relative.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Les comptes dont `type` vaut `admin` peuvent consulter et gérer les comptes
+utilisateurs. Cette autorisation est aussi contrôlée par l’API NestJS.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Vérification
+
+```bash
+npm run lint
+npm run build
+```
