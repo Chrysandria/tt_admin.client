@@ -11,11 +11,17 @@ export interface User {
 export interface Product {
   id: string;
   nom: string;
+  keywords: string[];
   prix: string;
   imageUrl: string | null;
   initial: number;
   available: number;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface FacebookPageSettings {
+  greetingMessage: string;
   updatedAt: string;
 }
 
@@ -33,6 +39,8 @@ export interface Order {
   status: OrderStatus;
   createdAt: string;
   items: OrderItem[];
+  facebookUserId?: string | null;
+  facebookChannel?: "comment" | "messenger" | null;
 }
 
 export class ApiError extends Error {

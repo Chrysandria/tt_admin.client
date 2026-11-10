@@ -8,6 +8,7 @@ import {
   ApiError,
   apiAssetUrl,
   apiRequest,
+  FacebookPageSettings,
   Order,
   OrderStatus,
   Product,
@@ -17,14 +18,14 @@ import { Icon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-type Section = "dashboard" | "orders" | "products" | "users";
+type Section = "dashboard" | "orders" | "products" | "users" | "facebook";
 type DialogState =
   | { type: "user"; user?: User }
   | { type: "product"; product?: Product }
   | { type: "order"; order?: Order }
   | null;
 
-const navigation: { id: Section; label: string; icon: "grid" | "bag" | "package" | "users" }[] = [
+const navigation: { id: Section; label: string; icon: "grid" | "bag" | "package" | "users" | "facebook" }[] = [
   { id: "dashboard", label: "Vue d’ensemble", icon: "grid" },
   { id: "orders", label: "Commandes", icon: "bag" },
   { id: "products", label: "Produits", icon: "package" },
@@ -35,6 +36,7 @@ const sectionPaths: Record<Section, string> = {
   orders: "/commandes",
   products: "/produits",
   users: "/utilisateurs",
+  facebook: "/facebook",
 };
 
 function getSectionFromPath(pathname: string): Section {
@@ -45,6 +47,8 @@ function getSectionFromPath(pathname: string): Section {
       return "products";
     case sectionPaths.users:
       return "users";
+    case sectionPaths.facebook:
+      return "facebook";
     default:
       return "dashboard";
   }
@@ -124,6 +128,7 @@ export default function AdminApp() {
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [facebookSettings, setFacebookSettings] = useState<FacebookPageSettings | null>(null);
   const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saving, setSaving] = useState(false);
@@ -132,14 +137,18 @@ export default function AdminApp() {
   const searchRef = useRef<HTMLInputElement>(null);
 
   const reloadData = useCallback(async (activeUser: User) => {
-    const [nextProducts, nextOrders, nextUsers] = await Promise.all([
+    const [nextProducts, nextOrders, nextUsers, nextFacebookSettings] = await Promise.all([
       apiRequest<Product[]>("/products"),
       apiRequest<Order[]>("/orders"),
       isAdmin(activeUser) ? apiRequest<User[]>("/users") : Promise.resolve([]),
+      isAdmin(activeUser)
+        ? apiRequest<FacebookPageSettings>("/facebook/settings")
+        : Promise.resolve(null),
     ]);
     setProducts(nextProducts);
     setOrders(nextOrders);
     setUsers(nextUsers);
+    setFacebookSettings(nextFacebookSettings);
   }, []);
 
   function navigateToSection(nextSection: Section) {
@@ -185,7 +194,7 @@ export default function AdminApp() {
       router.replace(sectionPaths.dashboard);
       return;
     }
-    if (user && section === "users" && !isAdmin(user)) {
+    if (user && (section === "users" || section === "facebook") && !isAdmin(user)) {
       router.replace(sectionPaths.dashboard);
     }
   }, [loading, pathname, router, section, user]);
@@ -204,7 +213,11 @@ export default function AdminApp() {
   const visibleNavigation = useMemo(
     () =>
       user && isAdmin(user)
-        ? [...navigation, { id: "users" as const, label: "Utilisateurs", icon: "users" as const }]
+        ? [
+            ...navigation,
+            { id: "users" as const, label: "Utilisateurs", icon: "users" as const },
+            { id: "facebook" as const, label: "Facebook", icon: "facebook" as const },
+          ]
         : navigation,
     [user],
   );
@@ -225,7 +238,13 @@ export default function AdminApp() {
   const filteredProducts = useMemo(() => {
     const value = query.trim().toLocaleLowerCase();
     return value
-      ? products.filter((product) => product.nom.toLocaleLowerCase().includes(value))
+      ? products.filter(
+          (product) =>
+            product.nom.toLocaleLowerCase().includes(value) ||
+            product.keywords.some((keyword) =>
+              keyword.toLocaleLowerCase().includes(value),
+            ),
+        )
       : products;
   }, [products, query]);
 
@@ -273,6 +292,7 @@ export default function AdminApp() {
       setProducts([]);
       setOrders([]);
       setUsers([]);
+      setFacebookSettings(null);
       setNotice("");
       setLogoutDialogOpen(false);
       router.replace("/");
@@ -346,6 +366,7 @@ export default function AdminApp() {
           ? (() => {
               const form = new FormData();
               form.set("nom", values.nom);
+              form.set("keywords", values.keywords.join(", "));
               form.set("prix", values.prix);
               form.set("initial", String(values.initial));
               if (values.available !== undefined) {
@@ -357,6 +378,7 @@ export default function AdminApp() {
             })()
           : JSON.stringify({
               nom: values.nom,
+              keywords: values.keywords,
               prix: values.prix,
               initial: values.initial,
               ...(values.available === undefined
@@ -379,6 +401,68 @@ export default function AdminApp() {
       setNotice(dialog.product ? "Le produit a été mis à jour." : "Le produit a été ajouté.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Impossible d’enregistrer ce produit.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveFacebookGreeting(
+    greetingMessage: string,
+  ): Promise<boolean> {
+    setSaving(true);
+    setError("");
+    try {
+      const settings = await apiRequest<FacebookPageSettings>(
+        "/facebook/settings",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ greetingMessage }),
+        },
+      );
+      setFacebookSettings(settings);
+      setNotice("Le message automatique a été enregistré.");
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible d’enregistrer le message automatique.",
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function publishFacebookPost(
+    message: string,
+    image?: File,
+    includeMessengerLink = false,
+  ): Promise<boolean> {
+    setSaving(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.set("message", message);
+      form.set("includeMessengerLink", String(includeMessengerLink));
+      if (image) form.set("image", image);
+      await apiRequest<{ published: boolean }>("/facebook/posts", {
+        method: "POST",
+        body: form,
+      });
+      setNotice(
+        includeMessengerLink
+          ? "La publication a été envoyée avec son lien Messenger."
+          : "La publication a été envoyée sur votre Page Facebook.",
+      );
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible de publier sur Facebook.",
+      );
+      return false;
     } finally {
       setSaving(false);
     }
@@ -559,6 +643,15 @@ export default function AdminApp() {
               <span>{error || notice}</span>
               <button type="button" className="notice-dismiss" onClick={() => { setError(""); setNotice(""); }} aria-label="Fermer"><Icon name="close" /></button>
             </div>
+          )}
+          {section === "facebook" && isAdmin(user) && (
+            <FacebookSection
+              key={facebookSettings?.updatedAt ?? "facebook-settings-loading"}
+              busy={saving}
+              greetingMessage={facebookSettings?.greetingMessage ?? ""}
+              onPublish={publishFacebookPost}
+              onSaveGreeting={saveFacebookGreeting}
+            />
           )}
 
           {section === "dashboard" && (
@@ -912,7 +1005,15 @@ function OrdersTable({
         <tbody>
           {orders.map((order) => (
             <tr key={order.id}>
-              <td><span className="order-reference">#{order.id.slice(0, 8).toLocaleUpperCase()}</span></td>
+              <td>
+                <span className="order-reference">#{order.id.slice(0, 8).toLocaleUpperCase()}</span>
+                {order.facebookChannel && (
+                  <small className="muted-cell">
+                    {order.facebookChannel === "messenger" ? "Messenger" : "Commentaire Facebook"}
+                    {order.facebookUserId ? ` · ${order.facebookUserId}` : ""}
+                  </small>
+                )}
+              </td>
               <td>
                 <div className="order-products-cell">
                   {order.items.map((item) => (
@@ -982,7 +1083,7 @@ function ProductsSection({
               <tbody>
                 {products.map((product) => (
                   <tr key={product.id}>
-                    <td><span className="table-product">{product.imageUrl ? <Image alt="" className="product-image-thumbnail" height={40} src={apiAssetUrl(product.imageUrl)!} unoptimized width={40} /> : <span className="product-initial product-initial-large">{initials(product.nom)}</span>}<span className="product-title"><strong>{product.nom}</strong><small>Ajouté le {formatDate(product.createdAt)}</small></span></span></td>
+                    <td><span className="table-product">{product.imageUrl ? <Image alt="" className="product-image-thumbnail" height={40} src={apiAssetUrl(product.imageUrl)!} unoptimized width={40} /> : <span className="product-initial product-initial-large">{initials(product.nom)}</span>}<span className="product-title"><strong>{product.nom}</strong><small>{product.keywords.length > 0 ? `Mots-clés : ${product.keywords.join(", ")}` : `Ajouté le ${formatDate(product.createdAt)}`}</small></span></span></td>
                     <td className="price-cell">{product.prix || "—"}</td>
                     <td><span className={`inventory-number ${product.available <= 5 ? "inventory-low" : ""}`}>{product.available}</span> <span className="muted-cell">unités</span></td>
                     <td className="muted-cell">{product.initial}</td>
@@ -994,6 +1095,162 @@ function ProductsSection({
             </table>
           </div>
         )}
+      </section>
+    </>
+  );
+}
+
+function FacebookSection({
+  busy,
+  greetingMessage,
+  onPublish,
+  onSaveGreeting,
+}: {
+  busy: boolean;
+  greetingMessage: string;
+  onPublish: (
+    message: string,
+    image?: File,
+    includeMessengerLink?: boolean,
+  ) => Promise<boolean>;
+  onSaveGreeting: (message: string) => Promise<boolean>;
+}) {
+  const [message, setMessage] = useState("");
+  const [image, setImage] = useState<File | null>(null);
+  const [includeMessengerLink, setIncludeMessengerLink] = useState(true);
+  const [greetingDraft, setGreetingDraft] = useState(greetingMessage);
+  const [imageError, setImageError] = useState("");
+  const [postFormKey, setPostFormKey] = useState(0);
+
+  async function submitPost(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!message.trim()) return;
+    if (image && image.size > 8 * 1024 * 1024) {
+      setImageError("L’image ne doit pas dépasser 8 Mio.");
+      return;
+    }
+    if (image && !["image/jpeg", "image/png"].includes(image.type)) {
+      setImageError("Le format de l’image doit être JPEG ou PNG.");
+      return;
+    }
+    const published = await onPublish(
+      message,
+      image ?? undefined,
+      includeMessengerLink,
+    );
+    if (published) {
+      setMessage("");
+      setImage(null);
+      setImageError("");
+      setPostFormKey((key) => key + 1);
+    }
+  }
+
+  async function saveGreeting(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onSaveGreeting(greetingDraft);
+  }
+
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">RÉSEAUX SOCIAUX</span>
+          <h1>Facebook</h1>
+          <p>Publiez sur votre Page et configurez vos réponses automatiques.</p>
+        </div>
+      </div>
+      <section className="panel table-panel">
+        <div className="panel-header table-panel-heading">
+          <div>
+            <h2>Nouvelle publication</h2>
+            <p>Le texte et l’image seront publiés immédiatement sur la Page.</p>
+          </div>
+        </div>
+        <form className="dialog-form" key={postFormKey} onSubmit={submitPost}>
+          <label className="form-label" htmlFor="facebook-post-message">Texte de la publication</label>
+          <textarea
+            className="field-control"
+            id="facebook-post-message"
+            maxLength={5000}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="Rédigez votre publication..."
+            required
+            rows={5}
+            value={message}
+          />
+          <label className="form-label" htmlFor="facebook-post-image">Image (JPEG ou PNG, 8 Mio maximum)</label>
+          <input
+            accept="image/jpeg,image/png"
+            className="field-control image-file-input"
+            id="facebook-post-image"
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              if (file && file.size > 8 * 1024 * 1024) {
+                setImage(null);
+                setImageError("L’image ne doit pas dépasser 8 Mio.");
+                event.target.value = "";
+                return;
+              }
+              if (file && !["image/jpeg", "image/png"].includes(file.type)) {
+                setImage(null);
+                setImageError("Le format de l’image doit être JPEG ou PNG.");
+                event.target.value = "";
+                return;
+              }
+              setImage(file);
+              setImageError("");
+            }}
+            type="file"
+          />
+          {imageError && <p className="dialog-hint" role="alert">{imageError}</p>}
+          {image && <p className="dialog-hint">Image sélectionnée : {image.name}</p>}
+          <label className="remember-check">
+            <input
+              checked={includeMessengerLink}
+              onChange={(event) => setIncludeMessengerLink(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="custom-checkbox"><Icon name="check" /></span>
+            <span>Ajouter un lien « Écrivez-nous sur Messenger »</span>
+          </label>
+          <p className="dialog-hint">
+            Le lien ouvrira directement la conversation avec votre Page. Facebook n’affiche pas de bouton natif sous les publications organiques.
+          </p>
+          <div className="dialog-actions">
+            <Button disabled={busy || !message.trim()} type="submit">
+              {busy ? "Publication..." : "Publier sur Facebook"}
+            </Button>
+          </div>
+        </form>
+      </section>
+      <section className="panel table-panel">
+        <div className="panel-header table-panel-heading">
+          <div>
+            <h2>Message automatique</h2>
+            <p>Envoyé en privé après un commentaire ou un message sans produit reconnu.</p>
+          </div>
+        </div>
+        <form className="dialog-form" onSubmit={saveGreeting}>
+          <label className="form-label" htmlFor="facebook-greeting">Message d’accueil</label>
+          <textarea
+            className="field-control"
+            id="facebook-greeting"
+            maxLength={2000}
+            onChange={(event) => setGreetingDraft(event.target.value)}
+            placeholder="Bonjour, merci de nous avoir contactés. Nous revenons vers vous rapidement."
+            rows={4}
+            value={greetingDraft}
+          />
+          <p className="dialog-hint">
+            2 000 caractères maximum. Laissez le texte vide pour désactiver la réponse générale. Les confirmations de commande et demandes de précision restent actives.
+          </p>
+          <div className="dialog-actions">
+            <Button disabled={busy} type="submit">
+              {busy ? "Enregistrement..." : "Enregistrer le message"}
+            </Button>
+          </div>
+        </form>
       </section>
     </>
   );
@@ -1113,6 +1370,7 @@ function UserDialog({
 
 interface ProductFormValues {
   nom: string;
+  keywords: string[];
   prix: string;
   initial: number;
   available?: number;
@@ -1133,6 +1391,8 @@ function ProductDialog({
 }) {
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
+  const [keywordError, setKeywordError] = useState("");
+  const [imageError, setImageError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(
     apiAssetUrl(product?.imageUrl ?? null),
   );
@@ -1146,8 +1406,22 @@ function ProductDialog({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const keywords = String(form.get("keywords") ?? "")
+      .split(/[,\n;]+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean);
+    if (keywords.length > 30) {
+      setKeywordError("Ajoutez au maximum 30 mots-clés ou variantes.");
+      return;
+    }
+    if (keywords.some((keyword) => keyword.length > 80)) {
+      setKeywordError("Chaque mot-clé ou variante doit faire 80 caractères maximum.");
+      return;
+    }
+    setKeywordError("");
     onSave({
       nom: String(form.get("nom") ?? "").trim(),
+      keywords,
       prix: String(form.get("prix") ?? "").trim(),
       initial: Number(form.get("initial")),
       ...(product ? { available: Number(form.get("available")) } : {}),
@@ -1159,18 +1433,44 @@ function ProductDialog({
     <DialogFrame onClose={onClose} title={product ? "Modifier le produit" : "Ajouter un produit"} subtitle="Les informations seront visibles dans votre catalogue.">
       <form className="dialog-form" onSubmit={submit}>
         <label className="form-label" htmlFor="product-name">Nom du produit</label><Input defaultValue={product?.nom} id="product-name" name="nom" placeholder="Ex. Sac en raphia" required />
+        <label className="form-label" htmlFor="product-keywords">Mots-clés et variantes</label>
+        <textarea
+          className="field-control"
+          defaultValue={product?.keywords.join(", ") ?? ""}
+          id="product-keywords"
+          name="keywords"
+          placeholder="Ex. sac naturel, sac fait main, raphia"
+          rows={3}
+        />
+        <p className="dialog-hint">Séparez les variantes par une virgule (30 maximum, 80 caractères chacune). Le nom du produit reste reconnu automatiquement.</p>
+        {keywordError && <p className="dialog-hint" role="alert">{keywordError}</p>}
         <label className="form-label" htmlFor="product-price">Prix</label><Input defaultValue={product?.prix} id="product-price" name="prix" placeholder="Ex. 25 000" />
         <div className="form-two-columns">
           <div><label className="form-label" htmlFor="product-initial">Stock initial</label><Input defaultValue={product?.initial ?? 0} id="product-initial" min="0" name="initial" required type="number" /></div>
           {product && <div><label className="form-label" htmlFor="product-available">Stock disponible</label><Input defaultValue={product.available} id="product-available" min="0" name="available" required type="number" /></div>}
         </div>
-        <label className="form-label" htmlFor="product-image">Image du produit</label>
+        <label className="form-label" htmlFor="product-image">Image du produit (JPEG, PNG ou WebP, 5 Mio maximum)</label>
         <input
           accept="image/jpeg,image/png,image/webp"
           className="field-control image-file-input"
           id="product-image"
           onChange={(event) => {
             const file = event.target.files?.[0] ?? null;
+            if (file && file.size > 5 * 1024 * 1024) {
+              setSelectedImage(null);
+              setImageError("L’image du produit ne doit pas dépasser 5 Mio.");
+              setPreviewUrl(removeImage ? null : apiAssetUrl(product?.imageUrl ?? null));
+              event.target.value = "";
+              return;
+            }
+            if (file && !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+              setSelectedImage(null);
+              setImageError("Le format de l’image doit être JPEG, PNG ou WebP.");
+              setPreviewUrl(removeImage ? null : apiAssetUrl(product?.imageUrl ?? null));
+              event.target.value = "";
+              return;
+            }
+            setImageError("");
             setSelectedImage(file);
             if (file) {
               setRemoveImage(false);
@@ -1181,6 +1481,7 @@ function ProductDialog({
           }}
           type="file"
         />
+        {imageError && <p className="dialog-hint" role="alert">{imageError}</p>}
         {previewUrl && <Image alt="Aperçu du produit" className="product-image-preview" height={96} src={previewUrl} unoptimized width={96} />}
         {product?.imageUrl && !removeImage && (
           <button className="remove-image-button" onClick={() => { setRemoveImage(true); setSelectedImage(null); setPreviewUrl(null); }} type="button">Retirer l’image actuelle</button>

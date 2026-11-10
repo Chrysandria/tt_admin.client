@@ -20,7 +20,24 @@ rechargement complet :
 - `/dashboard` : tableau de bord
 - `/commandes` : suivi des commandes
 - `/produits` : suivi des produits
+- `/facebook` : publication et automatisations de la Page, réservées aux administrateurs
 - `/utilisateurs` : gestion des comptes, réservée aux administrateurs
+
+Chaque produit peut aussi recevoir des mots-clés ou variantes de nom
+séparés par des virgules. Le moteur de commandes Messenger reconnaît le nom et
+ces variantes dans un message, accepte une quantité avant ou après le nom, et
+peut réserver plusieurs produits dans une même commande si les correspondances
+sont non ambiguës et le stock disponible.
+
+La rubrique Facebook permet aussi de publier immédiatement un texte (5 000
+caractères maximum) avec une image JPEG ou PNG (8 Mio maximum). L’option de lien
+Messenger ajoute à la publication un lien ouvrant directement une conversation
+avec la Page ; Facebook ne propose pas de bouton natif de messagerie sur les
+publications organiques. La rubrique permet aussi de configurer le message privé
+envoyé après un commentaire ou un message Messenger sans produit reconnu
+(2 000 caractères maximum). Les images produit acceptent JPEG, PNG ou WebP
+jusqu’à 5 Mio. Les limites des mots-clés sont de 30 variantes par produit et
+80 caractères par variante.
 
 Une commande peut contenir plusieurs produits. Dans le formulaire, ajoutez des
 lignes de produits et leurs quantités ; une commande existante peut ensuite
