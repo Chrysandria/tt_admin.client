@@ -398,12 +398,48 @@ export default function AdminApp() {
       }
       await reloadData(user);
       setDialog(null);
-      setNotice(dialog.product ? "Le produit a été mis à jour." : "Le produit a été ajouté.");
+      if (dialog.product) {
+        setNotice("Le produit a été mis à jour.");
+      } else if (values.publishOnFacebook) {
+        const message =
+          values.facebookMessage?.trim() ||
+          `Nouveau produit : ${values.nom}${values.prix ? `\nPrix : ${values.prix}` : ""}`;
+        try {
+          await sendFacebookPost(message, values.image, true);
+          setNotice("Le produit a été enregistré et publié sur Facebook.");
+        } catch (publicationCause) {
+          setNotice("");
+          setError(
+            `Le produit a été enregistré, mais la publication Facebook a échoué : ${
+              publicationCause instanceof Error
+                ? publicationCause.message
+                : "erreur inconnue"
+            }`,
+          );
+        }
+      } else {
+        setNotice("Le produit a été ajouté.");
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Impossible d’enregistrer ce produit.");
     } finally {
       setSaving(false);
     }
+  }
+
+  async function sendFacebookPost(
+    message: string,
+    image?: File,
+    includeMessengerLink = false,
+  ) {
+    const form = new FormData();
+    form.set("message", message);
+    form.set("includeMessengerLink", String(includeMessengerLink));
+    if (image) form.set("image", image);
+    await apiRequest<{ published: boolean }>("/facebook/posts", {
+      method: "POST",
+      body: form,
+    });
   }
 
   async function saveFacebookGreeting(
@@ -442,14 +478,7 @@ export default function AdminApp() {
     setSaving(true);
     setError("");
     try {
-      const form = new FormData();
-      form.set("message", message);
-      form.set("includeMessengerLink", String(includeMessengerLink));
-      if (image) form.set("image", image);
-      await apiRequest<{ published: boolean }>("/facebook/posts", {
-        method: "POST",
-        body: form,
-      });
+      await sendFacebookPost(message, image, includeMessengerLink);
       setNotice(
         includeMessengerLink
           ? "La publication a été envoyée avec son lien Messenger."
@@ -649,7 +678,6 @@ export default function AdminApp() {
               key={facebookSettings?.updatedAt ?? "facebook-settings-loading"}
               busy={saving}
               greetingMessage={facebookSettings?.greetingMessage ?? ""}
-              onPublish={publishFacebookPost}
               onSaveGreeting={saveFacebookGreeting}
             />
           )}
@@ -673,11 +701,19 @@ export default function AdminApp() {
             />
           )}
           {section === "products" && (
-            <ProductsSection
-              products={filteredProducts}
-              onAdd={() => setDialog({ type: "product" })}
-              onEdit={(product) => setDialog({ type: "product", product })}
-            />
+            <>
+              <ProductsSection
+                products={filteredProducts}
+                onAdd={() => setDialog({ type: "product" })}
+                onEdit={(product) => setDialog({ type: "product", product })}
+              />
+              {isAdmin(user) && (
+                <FacebookPostComposer
+                  busy={saving}
+                  onPublish={publishFacebookPost}
+                />
+              )}
+            </>
           )}
           {section === "users" && isAdmin(user) && (
             <UsersSection
@@ -702,6 +738,7 @@ export default function AdminApp() {
       {dialog?.type === "product" && (
         <ProductDialog
           busy={saving}
+          canPublish={isAdmin(user)}
           product={dialog.product}
           onClose={() => setDialog(null)}
           onSave={saveProduct}
@@ -1100,25 +1137,20 @@ function ProductsSection({
   );
 }
 
-function FacebookSection({
+function FacebookPostComposer({
   busy,
-  greetingMessage,
   onPublish,
-  onSaveGreeting,
 }: {
   busy: boolean;
-  greetingMessage: string;
   onPublish: (
     message: string,
     image?: File,
     includeMessengerLink?: boolean,
   ) => Promise<boolean>;
-  onSaveGreeting: (message: string) => Promise<boolean>;
 }) {
   const [message, setMessage] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [includeMessengerLink, setIncludeMessengerLink] = useState(true);
-  const [greetingDraft, setGreetingDraft] = useState(greetingMessage);
   const [imageError, setImageError] = useState("");
   const [postFormKey, setPostFormKey] = useState(0);
 
@@ -1146,6 +1178,85 @@ function FacebookSection({
     }
   }
 
+  return (
+    <section className="panel table-panel">
+      <div className="panel-header table-panel-heading">
+        <div>
+          <h2>Publication Facebook</h2>
+          <p>Publiez immédiatement sur votre Page, ou utilisez cette étape lors de l’ajout d’un produit.</p>
+        </div>
+      </div>
+      <form className="dialog-form" key={postFormKey} onSubmit={submitPost}>
+        <label className="form-label" htmlFor="facebook-post-message">Texte de la publication</label>
+        <textarea
+          className="field-control"
+          id="facebook-post-message"
+          maxLength={5000}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder="Rédigez votre publication..."
+          required
+          rows={5}
+          value={message}
+        />
+        <label className="form-label" htmlFor="facebook-post-image">Image (JPEG ou PNG, 8 Mio maximum)</label>
+        <input
+          accept="image/jpeg,image/png"
+          className="field-control image-file-input"
+          id="facebook-post-image"
+          onChange={(event) => {
+            const file = event.target.files?.[0] ?? null;
+            if (file && file.size > 8 * 1024 * 1024) {
+              setImage(null);
+              setImageError("L’image ne doit pas dépasser 8 Mio.");
+              event.target.value = "";
+              return;
+            }
+            if (file && !["image/jpeg", "image/png"].includes(file.type)) {
+              setImage(null);
+              setImageError("Le format de l’image doit être JPEG ou PNG.");
+              event.target.value = "";
+              return;
+            }
+            setImage(file);
+            setImageError("");
+          }}
+          type="file"
+        />
+        {imageError && <p className="dialog-hint" role="alert">{imageError}</p>}
+        {image && <p className="dialog-hint">Image sélectionnée : {image.name}</p>}
+        <label className="remember-check">
+          <input
+            checked={includeMessengerLink}
+            onChange={(event) => setIncludeMessengerLink(event.target.checked)}
+            type="checkbox"
+          />
+          <span className="custom-checkbox"><Icon name="check" /></span>
+          <span>Ajouter un lien « Écrivez-nous sur Messenger »</span>
+        </label>
+        <p className="dialog-hint">
+          Le lien ouvrira directement la conversation avec votre Page. Facebook n’affiche pas de bouton natif sous les publications organiques.
+        </p>
+        <div className="dialog-actions">
+          <Button disabled={busy || !message.trim()} type="submit">
+            {busy ? "Publication..." : "Publier sur Facebook"}
+          </Button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function FacebookSection({
+  busy,
+  greetingMessage,
+  onSaveGreeting,
+}: {
+  busy: boolean;
+  greetingMessage: string;
+  onSaveGreeting: (message: string) => Promise<boolean>;
+}) {
+  const [greetingDraft, setGreetingDraft] = useState(greetingMessage);
+
   async function saveGreeting(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await onSaveGreeting(greetingDraft);
@@ -1157,73 +1268,9 @@ function FacebookSection({
         <div>
           <span className="eyebrow">RÉSEAUX SOCIAUX</span>
           <h1>Facebook</h1>
-          <p>Publiez sur votre Page et configurez vos réponses automatiques.</p>
+          <p>Configurez les réponses automatiques de votre Page.</p>
         </div>
       </div>
-      <section className="panel table-panel">
-        <div className="panel-header table-panel-heading">
-          <div>
-            <h2>Nouvelle publication</h2>
-            <p>Le texte et l’image seront publiés immédiatement sur la Page.</p>
-          </div>
-        </div>
-        <form className="dialog-form" key={postFormKey} onSubmit={submitPost}>
-          <label className="form-label" htmlFor="facebook-post-message">Texte de la publication</label>
-          <textarea
-            className="field-control"
-            id="facebook-post-message"
-            maxLength={5000}
-            onChange={(event) => setMessage(event.target.value)}
-            placeholder="Rédigez votre publication..."
-            required
-            rows={5}
-            value={message}
-          />
-          <label className="form-label" htmlFor="facebook-post-image">Image (JPEG ou PNG, 8 Mio maximum)</label>
-          <input
-            accept="image/jpeg,image/png"
-            className="field-control image-file-input"
-            id="facebook-post-image"
-            onChange={(event) => {
-              const file = event.target.files?.[0] ?? null;
-              if (file && file.size > 8 * 1024 * 1024) {
-                setImage(null);
-                setImageError("L’image ne doit pas dépasser 8 Mio.");
-                event.target.value = "";
-                return;
-              }
-              if (file && !["image/jpeg", "image/png"].includes(file.type)) {
-                setImage(null);
-                setImageError("Le format de l’image doit être JPEG ou PNG.");
-                event.target.value = "";
-                return;
-              }
-              setImage(file);
-              setImageError("");
-            }}
-            type="file"
-          />
-          {imageError && <p className="dialog-hint" role="alert">{imageError}</p>}
-          {image && <p className="dialog-hint">Image sélectionnée : {image.name}</p>}
-          <label className="remember-check">
-            <input
-              checked={includeMessengerLink}
-              onChange={(event) => setIncludeMessengerLink(event.target.checked)}
-              type="checkbox"
-            />
-            <span className="custom-checkbox"><Icon name="check" /></span>
-            <span>Ajouter un lien « Écrivez-nous sur Messenger »</span>
-          </label>
-          <p className="dialog-hint">
-            Le lien ouvrira directement la conversation avec votre Page. Facebook n’affiche pas de bouton natif sous les publications organiques.
-          </p>
-          <div className="dialog-actions">
-            <Button disabled={busy || !message.trim()} type="submit">
-              {busy ? "Publication..." : "Publier sur Facebook"}
-            </Button>
-          </div>
-        </form>
-      </section>
       <section className="panel table-panel">
         <div className="panel-header table-panel-heading">
           <div>
@@ -1376,21 +1423,26 @@ interface ProductFormValues {
   available?: number;
   image?: File;
   removeImage?: boolean;
+  publishOnFacebook?: boolean;
+  facebookMessage?: string;
 }
 
 function ProductDialog({
   busy,
+  canPublish,
   product,
   onClose,
   onSave,
 }: {
   busy: boolean;
+  canPublish: boolean;
   product?: Product;
   onClose: () => void;
   onSave: (values: ProductFormValues) => void;
 }) {
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
+  const [publishOnFacebook, setPublishOnFacebook] = useState(false);
   const [keywordError, setKeywordError] = useState("");
   const [imageError, setImageError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(
@@ -1418,7 +1470,17 @@ function ProductDialog({
       setKeywordError("Chaque mot-clé ou variante doit faire 80 caractères maximum.");
       return;
     }
+    if (
+      canPublish &&
+      publishOnFacebook &&
+      selectedImage &&
+      !["image/jpeg", "image/png"].includes(selectedImage.type)
+    ) {
+      setImageError("Pour publier aussi sur Facebook, choisissez une image JPEG ou PNG.");
+      return;
+    }
     setKeywordError("");
+    setImageError("");
     onSave({
       nom: String(form.get("nom") ?? "").trim(),
       keywords,
@@ -1427,6 +1489,12 @@ function ProductDialog({
       ...(product ? { available: Number(form.get("available")) } : {}),
       ...(selectedImage ? { image: selectedImage } : {}),
       ...(removeImage ? { removeImage: true } : {}),
+      ...(!product && canPublish && publishOnFacebook
+        ? {
+            publishOnFacebook: true,
+            facebookMessage: String(form.get("facebookMessage") ?? "").trim(),
+          }
+        : {}),
     });
   }
   return (
@@ -1485,6 +1553,38 @@ function ProductDialog({
         {previewUrl && <Image alt="Aperçu du produit" className="product-image-preview" height={96} src={previewUrl} unoptimized width={96} />}
         {product?.imageUrl && !removeImage && (
           <button className="remove-image-button" onClick={() => { setRemoveImage(true); setSelectedImage(null); setPreviewUrl(null); }} type="button">Retirer l’image actuelle</button>
+        )}
+        {!product && canPublish && (
+          <>
+            <label className="remember-check">
+              <input
+                checked={publishOnFacebook}
+                onChange={(event) => {
+                  setPublishOnFacebook(event.target.checked);
+                  if (!event.target.checked) setImageError("");
+                }}
+                type="checkbox"
+              />
+              <span className="custom-checkbox"><Icon name="check" /></span>
+              <span>Publier ce produit sur Facebook après son enregistrement</span>
+            </label>
+            {publishOnFacebook && (
+              <>
+                <label className="form-label" htmlFor="product-facebook-message">Texte de la publication (facultatif)</label>
+                <textarea
+                  className="field-control"
+                  id="product-facebook-message"
+                  maxLength={5000}
+                  name="facebookMessage"
+                  placeholder="Par défaut, le nom et le prix du produit seront publiés."
+                  rows={3}
+                />
+                <p className="dialog-hint">
+                  L’image du produit sera jointe à la publication. Le fichier doit être au format JPEG ou PNG.
+                </p>
+              </>
+            )}
+          </>
         )}
         <DialogActions busy={busy} onClose={onClose} submitLabel={product ? "Enregistrer" : "Ajouter le produit"} />
       </form>
