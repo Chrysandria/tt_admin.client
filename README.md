@@ -25,13 +25,17 @@ NEXT_PUBLIC_API_URL=http://localhost:5000
 - `/produits` : catalogue, stock, images et mots-clés utilisés pour reconnaître
   les commandes reçues via Facebook. Les administrateurs peuvent y publier un
   produit immédiatement après son enregistrement, ou créer une publication.
-- `/commandes` : suivi des commandes et de leurs statuts.
+- `/commandes` : suivi des commandes, coordonnées du client, adresse de livraison
+  et date/heure de livraison. Les coordonnées des commandes Facebook sont à
+  compléter manuellement après avoir contacté le client.
 - `/utilisateurs` : gestion des comptes, réservée aux administrateurs.
 - `/facebook` : configuration du message d’accueil automatique. La création de
   publications Facebook se fait depuis `/produits`.
 
-Les demandes Facebook reconnues peuvent créer une commande multi-produits et
-réserver le stock. Les paiements ne sont pas traités par l’application.
+Chaque commande concerne un seul produit. Les demandes Facebook reconnues
+réservent le stock; les clients qui demandent plusieurs produits sont invités à
+envoyer un message distinct pour chaque produit. Les paiements ne sont pas
+traités par l’application.
 
 ## Vérification
 

@@ -11,13 +11,25 @@ export interface User {
 export interface Product {
   id: string;
   nom: string;
+  description: string;
   keywords: string[];
   prix: string;
   imageUrl: string | null;
   initial: number;
   available: number;
+  colors: ProductColor[];
+  facebookPostId: string | null;
+  facebookPublishedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductColor {
+  id: string;
+  productId: string;
+  name: string;
+  initial: number;
+  available: number;
 }
 
 export interface FacebookPageSettings {
@@ -30,14 +42,20 @@ export type OrderStatus = "reserved" | "payed" | "canceled";
 export interface OrderItem {
   id: string;
   productId: string;
+  productColorId: string | null;
   quantity: number;
   product: Product;
+  productColor: ProductColor | null;
 }
 
 export interface Order {
   id: string;
   status: OrderStatus;
   createdAt: string;
+  customerName: string | null;
+  deliveryAddress: string | null;
+  customerPhone: string | null;
+  deliveredAt: string | null;
   items: OrderItem[];
   facebookUserId?: string | null;
   facebookChannel?: "comment" | "messenger" | null;
@@ -54,7 +72,7 @@ export class ApiError extends Error {
 }
 
 const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
+  process.env.NEXT_PUBLIC_API_URL!
 ).replace(/\/$/, "");
 
 export function apiAssetUrl(path: string): string;

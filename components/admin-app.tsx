@@ -18,17 +18,25 @@ import { Icon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-type Section = "dashboard" | "orders" | "products" | "users" | "facebook";
+type Section =
+  | "dashboard"
+  | "orders"
+  | "products"
+  | "users"
+  | "facebook"
+  | "security";
 type DialogState =
   | { type: "user"; user?: User }
   | { type: "product"; product?: Product }
   | { type: "order"; order?: Order }
+  | { type: "delete-product"; product: Product }
   | null;
 
-const navigation: { id: Section; label: string; icon: "grid" | "bag" | "package" | "users" | "facebook" }[] = [
+const navigation: { id: Section; label: string; icon: "grid" | "bag" | "package" | "users" | "facebook" | "lock" }[] = [
   { id: "dashboard", label: "Vue d’ensemble", icon: "grid" },
   { id: "orders", label: "Commandes", icon: "bag" },
   { id: "products", label: "Produits", icon: "package" },
+  { id: "security", label: "Sécurité", icon: "lock" },
 ];
 
 const sectionPaths: Record<Section, string> = {
@@ -37,6 +45,7 @@ const sectionPaths: Record<Section, string> = {
   products: "/produits",
   users: "/utilisateurs",
   facebook: "/facebook",
+  security: "/securite",
 };
 
 function getSectionFromPath(pathname: string): Section {
@@ -49,6 +58,8 @@ function getSectionFromPath(pathname: string): Section {
       return "users";
     case sectionPaths.facebook:
       return "facebook";
+    case sectionPaths.security:
+      return "security";
     default:
       return "dashboard";
   }
@@ -104,6 +115,16 @@ function formatDate(value: string) {
     day: "2-digit",
     month: "short",
     year: "numeric",
+  }).format(new Date(value));
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   }).format(new Date(value));
 }
 
@@ -361,37 +382,30 @@ export default function AdminApp() {
     setSaving(true);
     setError("");
     try {
-      const body: BodyInit =
-        values.image || values.removeImage
-          ? (() => {
-              const form = new FormData();
-              form.set("nom", values.nom);
-              form.set("keywords", values.keywords.join(", "));
-              form.set("prix", values.prix);
-              form.set("initial", String(values.initial));
-              if (values.available !== undefined) {
-                form.set("available", String(values.available));
-              }
-              if (values.image) form.set("image", values.image);
-              if (values.removeImage) form.set("removeImage", "true");
-              return form;
-            })()
-          : JSON.stringify({
-              nom: values.nom,
-              keywords: values.keywords,
-              prix: values.prix,
-              initial: values.initial,
-              ...(values.available === undefined
-                ? {}
-                : { available: values.available }),
-            });
+      const body = new FormData();
+      const initial = values.colors.length
+        ? values.colors.reduce((total, color) => total + color.initial, 0)
+        : values.initial;
+      body.set("nom", values.nom);
+      body.set("description", values.description);
+      body.set("keywords", values.keywords.join(", "));
+      body.set("colors", JSON.stringify(values.colors));
+      body.set("prix", values.prix);
+      body.set("initial", String(initial));
+      if (values.colors.length === 0 && values.available !== undefined) {
+        body.set("available", String(values.available));
+      }
+      if (values.image) body.set("image", values.image);
+      if (values.removeImage) body.set("removeImage", "true");
+
+      let savedProduct: Product;
       if (dialog.product) {
-        await apiRequest<Product>(`/products/${dialog.product.id}`, {
+        savedProduct = await apiRequest<Product>(`/products/${dialog.product.id}`, {
           method: "PATCH",
           body,
         });
       } else {
-        await apiRequest<Product>("/products", {
+        savedProduct = await apiRequest<Product>("/products", {
           method: "POST",
           body,
         });
@@ -405,7 +419,13 @@ export default function AdminApp() {
           values.facebookMessage?.trim() ||
           `Nouveau produit : ${values.nom}${values.prix ? `\nPrix : ${values.prix}` : ""}`;
         try {
-          await sendFacebookPost(message, values.image, true);
+          await sendFacebookPost(
+            message,
+            values.image,
+            true,
+            savedProduct.id,
+          );
+          await reloadData(user);
           setNotice("Le produit a été enregistré et publié sur Facebook.");
         } catch (publicationCause) {
           setNotice("");
@@ -427,16 +447,67 @@ export default function AdminApp() {
     }
   }
 
+  async function deleteProduct(product: Product) {
+    if (!user) return;
+
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest<Product>(`/products/${product.id}`, {
+        method: "DELETE",
+      });
+      await reloadData(user);
+      setDialog(null);
+      setNotice(`Le produit « ${product.nom} » a été supprimé du catalogue.`);
+    } catch (cause) {
+      setDialog(null);
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible de supprimer ce produit.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function publishExistingProduct(product: Product) {
+    if (!user || product.facebookPostId) return;
+
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest<{ published: boolean; postId: string }>(
+        `/facebook/products/${product.id}/publish`,
+        { method: "POST" },
+      );
+      await reloadData(user);
+      setNotice(`« ${product.nom} » a été publié sur Facebook.`);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible de publier ce produit sur Facebook.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function sendFacebookPost(
     message: string,
     image?: File,
     includeMessengerLink = false,
+    productId?: string,
   ) {
     const form = new FormData();
     form.set("message", message);
     form.set("includeMessengerLink", String(includeMessengerLink));
+    if (productId) form.set("productId", productId);
     if (image) form.set("image", image);
-    await apiRequest<{ published: boolean }>("/facebook/posts", {
+    return apiRequest<{ published: boolean; postId: string }>("/facebook/posts", {
       method: "POST",
       body: form,
     });
@@ -542,6 +613,74 @@ export default function AdminApp() {
       setNotice("Le statut de la commande a été mis à jour.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Impossible de modifier la commande.");
+    }
+  }
+
+  async function markOrderDelivered(order: Order) {
+    if (!user || order.deliveredAt || order.status === "canceled") return;
+    setError("");
+    try {
+      await apiRequest<Order>(`/orders/${order.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ delivered: true }),
+      });
+      await reloadData(user);
+      setNotice(`La commande #${order.id.slice(0, 8).toLocaleUpperCase()} a été marquée comme livrée.`);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible d’enregistrer la livraison.",
+      );
+    }
+  }
+
+  async function requestPasswordOtp(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<boolean> {
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest<{ otpSent: boolean }>("/auth/password", {
+        method: "PATCH",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setNotice("Un code de confirmation a été envoyé à l’adresse de votre compte.");
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible de modifier votre mot de passe.",
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function confirmPasswordOtp(otp: string): Promise<boolean> {
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest<{ success: boolean }>("/auth/password/confirm-otp", {
+        method: "POST",
+        body: JSON.stringify({ otp }),
+      });
+      setNotice("Votre mot de passe a été modifié.");
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Impossible de confirmer le changement de mot de passe.",
+      );
+      return false;
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -681,6 +820,13 @@ export default function AdminApp() {
               onSaveGreeting={saveFacebookGreeting}
             />
           )}
+          {section === "security" && (
+            <SecuritySection
+              busy={saving}
+              onConfirmOtp={confirmPasswordOtp}
+              onRequestOtp={requestPasswordOtp}
+            />
+          )}
 
           {section === "dashboard" && (
             <DashboardSection
@@ -689,6 +835,7 @@ export default function AdminApp() {
               users={users}
               user={user}
               onNavigate={navigateToSection}
+              onUpdateDelivery={markOrderDelivered}
               onUpdateStatus={updateOrderStatus}
             />
           )}
@@ -697,6 +844,7 @@ export default function AdminApp() {
               orders={filteredOrders}
               onAdd={() => setDialog({ type: "order" })}
               onEdit={(order) => setDialog({ type: "order", order })}
+              onUpdateDelivery={markOrderDelivered}
               onUpdateStatus={updateOrderStatus}
             />
           )}
@@ -704,8 +852,14 @@ export default function AdminApp() {
             <>
               <ProductsSection
                 products={filteredProducts}
+                canPublish={isAdmin(user)}
+                busy={saving}
                 onAdd={() => setDialog({ type: "product" })}
+                onDelete={(product) =>
+                  setDialog({ type: "delete-product", product })
+                }
                 onEdit={(product) => setDialog({ type: "product", product })}
+                onPublish={publishExistingProduct}
               />
               {isAdmin(user) && (
                 <FacebookPostComposer
@@ -756,6 +910,14 @@ export default function AdminApp() {
           )}
           onClose={() => setDialog(null)}
           onSave={saveOrder}
+        />
+      )}
+      {dialog?.type === "delete-product" && (
+        <DeleteProductDialog
+          busy={saving}
+          product={dialog.product}
+          onClose={() => setDialog(null)}
+          onConfirm={() => deleteProduct(dialog.product)}
         />
       )}
       {logoutDialogOpen && (
@@ -870,6 +1032,7 @@ function DashboardSection({
   users,
   user,
   onNavigate,
+  onUpdateDelivery,
   onUpdateStatus,
 }: {
   orders: Order[];
@@ -877,6 +1040,7 @@ function DashboardSection({
   users: User[];
   user: User;
   onNavigate: (section: Section) => void;
+  onUpdateDelivery: (order: Order) => void;
   onUpdateStatus: (order: Order, status: OrderStatus) => void;
 }) {
   const paidOrders = orders.filter((order) => order.status === "payed");
@@ -970,7 +1134,12 @@ function DashboardSection({
           <div><h2>Commandes récentes</h2><p>Suivez les dernières commandes de votre boutique.</p></div>
           <button className="text-link" onClick={() => onNavigate("orders")} type="button">Toutes les commandes <Icon name="chevron" /></button>
         </div>
-        <OrdersTable orders={orders.slice(0, 5)} onUpdateStatus={onUpdateStatus} compact />
+        <OrdersTable
+          orders={orders.slice(0, 5)}
+          onUpdateDelivery={onUpdateDelivery}
+          onUpdateStatus={onUpdateStatus}
+          compact
+        />
       </section>
     </>
   );
@@ -1002,11 +1171,13 @@ function OrdersSection({
   orders,
   onAdd,
   onEdit,
+  onUpdateDelivery,
   onUpdateStatus,
 }: {
   orders: Order[];
   onAdd: () => void;
   onEdit: (order: Order) => void;
+  onUpdateDelivery: (order: Order) => void;
   onUpdateStatus: (order: Order, status: OrderStatus) => void;
 }) {
   return (
@@ -1016,7 +1187,14 @@ function OrdersSection({
         <button className="btn btn-primary" onClick={onAdd} type="button"><Icon name="plus" /> Nouvelle commande</button>
       </div>
       <div className="table-summary"><span><strong>{formatNumber(orders.length)}</strong> commande{orders.length === 1 ? "" : "s"}</span><span className="table-filter-label"><Icon name="filter" /> Résultats</span></div>
-      <section className="panel table-panel"><OrdersTable orders={orders} onEdit={onEdit} onUpdateStatus={onUpdateStatus} /></section>
+      <section className="panel table-panel">
+        <OrdersTable
+          orders={orders}
+          onEdit={onEdit}
+          onUpdateDelivery={onUpdateDelivery}
+          onUpdateStatus={onUpdateStatus}
+        />
+      </section>
     </>
   );
 }
@@ -1024,11 +1202,13 @@ function OrdersSection({
 function OrdersTable({
   orders,
   onEdit,
+  onUpdateDelivery,
   onUpdateStatus,
   compact = false,
 }: {
   orders: Order[];
   onEdit?: (order: Order) => void;
+  onUpdateDelivery: (order: Order) => void;
   onUpdateStatus: (order: Order, status: OrderStatus) => void;
   compact?: boolean;
 }) {
@@ -1038,7 +1218,7 @@ function OrdersTable({
   return (
     <div className="table-scroll">
       <table className="data-table orders-table">
-        <thead><tr><th>Référence</th><th>Produits</th><th>Date</th><th>Qté totale</th><th>Statut</th>{!compact && <th>Action</th>}</tr></thead>
+        <thead><tr><th>Référence</th><th>Produit</th>{!compact && <th>Client / livraison</th>}<th>Date</th><th>Quantité</th><th>Statut</th>{!compact && <th>Action</th>}</tr></thead>
         <tbody>
           {orders.map((order) => (
             <tr key={order.id}>
@@ -1055,11 +1235,31 @@ function OrdersTable({
                 <div className="order-products-cell">
                   {order.items.map((item) => (
                     <span key={item.id}>
-                      {item.product?.nom ?? "Produit supprimé"} × {item.quantity}
+                      {item.product?.nom ?? "Produit supprimé"}
+                      {item.productColor ? ` · ${item.productColor.name}` : ""} × {item.quantity}
                     </span>
                   ))}
                 </div>
               </td>
+              {!compact && (
+              <td>
+                <div className="order-customer-cell">
+                  <strong>{order.customerName || (order.facebookUserId ? "Client Facebook" : "Client à renseigner")}</strong>
+                  {order.customerPhone && <a href={`tel:${order.customerPhone}`}>{order.customerPhone}</a>}
+                  {order.deliveryAddress && <small>{order.deliveryAddress}</small>}
+                  {!order.customerPhone && !order.deliveryAddress && (
+                    <small className="muted-cell">
+                      Coordonnées à compléter
+                    </small>
+                  )}
+                  {order.deliveredAt && (
+                    <small className="delivery-timestamp">
+                      Livrée le {formatDateTime(order.deliveredAt)}
+                    </small>
+                  )}
+                </div>
+              </td>
+              )}
               <td className="muted-cell">{formatDate(order.createdAt)}</td>
               <td><span className="quantity-cell">{order.items.reduce((total, item) => total + item.quantity, 0)}</span></td>
               <td><StatusBadge status={order.status} /></td>
@@ -1075,6 +1275,15 @@ function OrdersTable({
                       {Object.entries(statusLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                     </select>
                     {onEdit && <button className="text-link" onClick={() => onEdit(order)} type="button">Modifier</button>}
+                    {!order.deliveredAt && order.status !== "canceled" && (
+                      <button
+                        className="text-link"
+                        onClick={() => onUpdateDelivery(order)}
+                        type="button"
+                      >
+                        Marquer livrée
+                      </button>
+                    )}
                   </div>
                 </td>
               )}
@@ -1092,12 +1301,20 @@ function StatusBadge({ status }: { status: OrderStatus }) {
 
 function ProductsSection({
   products,
+  canPublish,
+  busy,
   onAdd,
+  onDelete,
   onEdit,
+  onPublish,
 }: {
   products: Product[];
+  canPublish: boolean;
+  busy: boolean;
   onAdd: () => void;
+  onDelete: (product: Product) => void;
   onEdit: (product: Product) => void;
+  onPublish: (product: Product) => void;
 }) {
   const availableUnits = products.reduce((sum, product) => sum + product.available, 0);
   return (
@@ -1120,18 +1337,293 @@ function ProductsSection({
               <tbody>
                 {products.map((product) => (
                   <tr key={product.id}>
-                    <td><span className="table-product">{product.imageUrl ? <Image alt="" className="product-image-thumbnail" height={40} src={apiAssetUrl(product.imageUrl)!} unoptimized width={40} /> : <span className="product-initial product-initial-large">{initials(product.nom)}</span>}<span className="product-title"><strong>{product.nom}</strong><small>{product.keywords.length > 0 ? `Mots-clés : ${product.keywords.join(", ")}` : `Ajouté le ${formatDate(product.createdAt)}`}</small></span></span></td>
+                    <td>
+                      <span className="table-product">
+                        {product.imageUrl ? (
+                          <Image
+                            alt=""
+                            className="product-image-thumbnail"
+                            height={40}
+                            src={apiAssetUrl(product.imageUrl)!}
+                            unoptimized
+                            width={40}
+                          />
+                        ) : (
+                          <span className="product-initial product-initial-large">
+                            {initials(product.nom)}
+                          </span>
+                        )}
+                        <span className="product-title">
+                          <strong>{product.nom}</strong>
+                          <small>
+                            {product.description ||
+                              (product.keywords.length > 0
+                                ? `Mots-clés : ${product.keywords.join(", ")}`
+                                : `Ajouté le ${formatDate(product.createdAt)}`)}
+                          </small>
+                          {product.colors.length > 0 && (
+                            <small>
+                              Couleurs :{" "}
+                              {product.colors
+                                .map(
+                                  (color) =>
+                                    `${color.name} (${color.available}/${color.initial})`,
+                                )
+                                .join(", ")}
+                            </small>
+                          )}
+                          {product.facebookPostId && (
+                            <small className="facebook-post-reference">
+                              Publié sur Facebook · ID {product.facebookPostId}
+                            </small>
+                          )}
+                        </span>
+                      </span>
+                    </td>
                     <td className="price-cell">{product.prix || "—"}</td>
                     <td><span className={`inventory-number ${product.available <= 5 ? "inventory-low" : ""}`}>{product.available}</span> <span className="muted-cell">unités</span></td>
                     <td className="muted-cell">{product.initial}</td>
                     <td><span className={`inventory-badge ${product.available === 0 ? "inventory-none" : product.available <= 5 ? "inventory-warning" : "inventory-ok"}`}><i />{product.available === 0 ? "Épuisé" : product.available <= 5 ? "Stock faible" : "En stock"}</span></td>
-                    <td><button className="icon-button row-action" type="button" onClick={() => onEdit(product)} aria-label={`Modifier ${product.nom}`} title="Modifier"><Icon name="edit" /></button></td>
+                    <td>
+                      <div className="row-actions">
+                        <button
+                          aria-label={`Modifier ${product.nom}`}
+                          className="icon-button row-action"
+                          onClick={() => onEdit(product)}
+                          title="Modifier"
+                          type="button"
+                        >
+                          <Icon name="edit" />
+                        </button>
+                        {canPublish && !product.facebookPostId && (
+                          <button
+                            aria-label={`Publier ${product.nom} sur Facebook`}
+                            className="icon-button row-action"
+                            disabled={busy}
+                            onClick={() => onPublish(product)}
+                            title="Publier sur Facebook"
+                            type="button"
+                          >
+                            <Icon name="facebook" />
+                          </button>
+                        )}
+                        <button
+                          aria-label={`Supprimer ${product.nom}`}
+                          className="icon-button row-action row-action-danger"
+                          onClick={() => onDelete(product)}
+                          title="Supprimer"
+                          type="button"
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+      </section>
+    </>
+  );
+}
+
+function SecuritySection({
+  busy,
+  onRequestOtp,
+  onConfirmOtp,
+}: {
+  busy: boolean;
+  onRequestOtp: (
+    currentPassword: string,
+    newPassword: string,
+  ) => Promise<boolean>;
+  onConfirmOtp: (otp: string) => Promise<boolean>;
+}) {
+  const [formError, setFormError] = useState("");
+  const [otpRequested, setOtpRequested] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [visiblePasswords, setVisiblePasswords] = useState({
+    current: false,
+    next: false,
+    confirm: false,
+  });
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+
+    if (otpRequested) {
+      const code = String(values.get("otp") ?? "").trim();
+      if (!/^\d{6}$/.test(code)) {
+        setFormError("Saisissez le code à 6 chiffres reçu par e-mail.");
+        return;
+      }
+      setFormError("");
+      if (await onConfirmOtp(code)) {
+        setOtpRequested(false);
+        setOtp("");
+        form.reset();
+      }
+      return;
+    }
+
+    const currentPassword = String(values.get("currentPassword") ?? "");
+    const newPassword = String(values.get("newPassword") ?? "");
+    const confirmPassword = String(values.get("confirmPassword") ?? "");
+    if (newPassword !== confirmPassword) {
+      setFormError("La confirmation ne correspond pas au nouveau mot de passe.");
+      return;
+    }
+
+    setFormError("");
+    if (await onRequestOtp(currentPassword, newPassword)) {
+      setOtpRequested(true);
+      setOtp("");
+      form.reset();
+    }
+  }
+
+  function useDifferentPassword() {
+    setOtpRequested(false);
+    setOtp("");
+    setFormError("");
+  }
+
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">COMPTE &amp; ACCÈS</span>
+          <h1>Sécurité</h1>
+          <p>Modifiez le mot de passe utilisé pour vous connecter à votre compte.</p>
+        </div>
+      </div>
+      <section className="panel security-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Modifier le mot de passe</h2>
+            <p>Un code envoyé par e-mail confirmera toute modification de mot de passe.</p>
+          </div>
+        </div>
+        <form className="dialog-form security-form" onSubmit={submit}>
+          {!otpRequested ? (
+            <>
+              <label className="form-label" htmlFor="current-password">
+                Mot de passe actuel
+              </label>
+              <div className="password-input-control">
+                <input
+                  autoComplete="current-password"
+                  className="field-control"
+                  id="current-password"
+                  maxLength={128}
+                  name="currentPassword"
+                  required
+                  type={visiblePasswords.current ? "text" : "password"}
+                />
+                <button
+                  aria-label={visiblePasswords.current ? "Masquer le mot de passe actuel" : "Afficher le mot de passe actuel"}
+                  className="password-toggle"
+                  onClick={() => setVisiblePasswords((state) => ({ ...state, current: !state.current }))}
+                  type="button"
+                >
+                  <Icon name={visiblePasswords.current ? "eyeOff" : "eye"} />
+                </button>
+              </div>
+              <label className="form-label" htmlFor="new-password">
+                Nouveau mot de passe
+              </label>
+              <div className="password-input-control">
+                <input
+                  autoComplete="new-password"
+                  className="field-control"
+                  id="new-password"
+                  maxLength={128}
+                  minLength={8}
+                  name="newPassword"
+                  required
+                  type={visiblePasswords.next ? "text" : "password"}
+                />
+                <button
+                  aria-label={visiblePasswords.next ? "Masquer le nouveau mot de passe" : "Afficher le nouveau mot de passe"}
+                  className="password-toggle"
+                  onClick={() => setVisiblePasswords((state) => ({ ...state, next: !state.next }))}
+                  type="button"
+                >
+                  <Icon name={visiblePasswords.next ? "eyeOff" : "eye"} />
+                </button>
+              </div>
+              <p className="dialog-hint">Utilisez entre 8 et 128 caractères.</p>
+              <label className="form-label" htmlFor="confirm-password">
+                Confirmer le nouveau mot de passe
+              </label>
+              <div className="password-input-control">
+                <input
+                  autoComplete="new-password"
+                  className="field-control"
+                  id="confirm-password"
+                  maxLength={128}
+                  minLength={8}
+                  name="confirmPassword"
+                  required
+                  type={visiblePasswords.confirm ? "text" : "password"}
+                />
+                <button
+                  aria-label={visiblePasswords.confirm ? "Masquer la confirmation" : "Afficher la confirmation"}
+                  className="password-toggle"
+                  onClick={() => setVisiblePasswords((state) => ({ ...state, confirm: !state.confirm }))}
+                  type="button"
+                >
+                  <Icon name={visiblePasswords.confirm ? "eyeOff" : "eye"} />
+                </button>
+              </div>
+              <div className="security-actions">
+                <Button className="btn btn-primary" disabled={busy} type="submit">
+                  {busy ? "Envoi du code…" : "Envoyer un code OTP"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="dialog-hint" role="status">
+                Un code à 6 chiffres a été envoyé à l’adresse e-mail de votre compte. Il expire dans 10 minutes.
+              </p>
+              <label className="form-label" htmlFor="password-otp">
+                Code de confirmation
+              </label>
+              <input
+                autoComplete="one-time-code"
+                className="field-control"
+                id="password-otp"
+                inputMode="numeric"
+                maxLength={6}
+                minLength={6}
+                name="otp"
+                onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                pattern="\d{6}"
+                required
+                type="text"
+                value={otp}
+              />
+              <div className="security-actions">
+                <Button className="btn btn-primary" disabled={busy} type="submit">
+                  {busy ? "Confirmation…" : "Confirmer le changement"}
+                </Button>
+                <Button disabled={busy} onClick={useDifferentPassword} type="button" variant="ghost">
+                  Recommencer
+                </Button>
+              </div>
+            </>
+          )}
+          {formError && (
+            <p className="dialog-hint" role="alert">
+              {formError}
+            </p>
+          )}
+        </form>
       </section>
     </>
   );
@@ -1408,7 +1900,7 @@ function UserDialog({
           <>
             <label className="form-label" htmlFor="user-name">Nom complet</label><Input defaultValue={user.nom} id="user-name" name="nom" placeholder="Ex. Marie Dupont" required />
           </>
-        ) : <p className="dialog-hint"><Icon name="mail" /> Un mot de passe provisoire sera généré et envoyé par e-mail.</p>}
+        ) : <p className="dialog-hint"><Icon name="mail" /> Un mot de passe provisoire aléatoire de 8 caractères sera généré et envoyé par e-mail.</p>}
         <DialogActions busy={busy} onClose={onClose} submitLabel={user ? "Enregistrer" : "Créer le compte"} />
       </form>
     </DialogFrame>
@@ -1417,14 +1909,23 @@ function UserDialog({
 
 interface ProductFormValues {
   nom: string;
+  description: string;
   keywords: string[];
   prix: string;
   initial: number;
   available?: number;
+  colors: ProductColorFormValue[];
   image?: File;
   removeImage?: boolean;
   publishOnFacebook?: boolean;
   facebookMessage?: string;
+}
+
+interface ProductColorFormValue {
+  id: string;
+  name: string;
+  initial: number;
+  available: number;
 }
 
 function ProductDialog({
@@ -1443,10 +1944,27 @@ function ProductDialog({
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
   const [publishOnFacebook, setPublishOnFacebook] = useState(false);
+  const [colorRows, setColorRows] = useState<ProductColorFormValue[]>(() =>
+    product?.colors.map((color) => ({
+      id: color.id,
+      name: color.name,
+      initial: color.initial,
+      available: color.available,
+    })) ?? [],
+  );
   const [keywordError, setKeywordError] = useState("");
   const [imageError, setImageError] = useState("");
+  const [colorError, setColorError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(
     apiAssetUrl(product?.imageUrl ?? null),
+  );
+  const colorInitialTotal = colorRows.reduce(
+    (total, color) => total + color.initial,
+    0,
+  );
+  const colorAvailableTotal = colorRows.reduce(
+    (total, color) => total + color.available,
+    0,
   );
 
   useEffect(() => {
@@ -1470,6 +1988,34 @@ function ProductDialog({
       setKeywordError("Chaque mot-clé ou variante doit faire 80 caractères maximum.");
       return;
     }
+    if (colorRows.length > 30) {
+      setColorError("Ajoutez au maximum 30 couleurs.");
+      return;
+    }
+    if (
+      colorRows.some(
+        (color) =>
+          !color.name.trim() ||
+          color.name.trim().length > 50 ||
+          !Number.isInteger(color.initial) ||
+          color.initial < 0 ||
+          !Number.isInteger(color.available) ||
+          color.available < 0 ||
+          color.available > color.initial,
+      )
+    ) {
+      setColorError(
+        "Chaque couleur doit avoir un nom et un stock disponible compris entre 0 et son stock initial.",
+      );
+      return;
+    }
+    const colorNames = colorRows.map((color) =>
+      color.name.trim().normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("fr-FR"),
+    );
+    if (new Set(colorNames).size !== colorNames.length) {
+      setColorError("Chaque couleur doit avoir un nom unique.");
+      return;
+    }
     if (
       canPublish &&
       publishOnFacebook &&
@@ -1481,12 +2027,22 @@ function ProductDialog({
     }
     setKeywordError("");
     setImageError("");
+    setColorError("");
     onSave({
       nom: String(form.get("nom") ?? "").trim(),
+      description: String(form.get("description") ?? "").trim(),
       keywords,
       prix: String(form.get("prix") ?? "").trim(),
-      initial: Number(form.get("initial")),
-      ...(product ? { available: Number(form.get("available")) } : {}),
+      initial: colorRows.length
+        ? colorInitialTotal
+        : Number(form.get("initial")),
+      ...(colorRows.length === 0 && product
+        ? { available: Number(form.get("available")) }
+        : {}),
+      colors: colorRows.map((color) => ({
+        ...color,
+        name: color.name.trim(),
+      })),
       ...(selectedImage ? { image: selectedImage } : {}),
       ...(removeImage ? { removeImage: true } : {}),
       ...(!product && canPublish && publishOnFacebook
@@ -1501,6 +2057,16 @@ function ProductDialog({
     <DialogFrame onClose={onClose} title={product ? "Modifier le produit" : "Ajouter un produit"} subtitle="Les informations seront visibles dans votre catalogue.">
       <form className="dialog-form" onSubmit={submit}>
         <label className="form-label" htmlFor="product-name">Nom du produit</label><Input defaultValue={product?.nom} id="product-name" name="nom" placeholder="Ex. Sac en raphia" required />
+        <label className="form-label" htmlFor="product-description">Description</label>
+        <textarea
+          className="field-control product-description-input"
+          defaultValue={product?.description ?? ""}
+          id="product-description"
+          maxLength={5000}
+          name="description"
+          placeholder="Décrivez le produit, sa matière, ses dimensions ou ses avantages."
+          rows={4}
+        />
         <label className="form-label" htmlFor="product-keywords">Mots-clés et variantes</label>
         <textarea
           className="field-control"
@@ -1513,10 +2079,123 @@ function ProductDialog({
         <p className="dialog-hint">Séparez les variantes par une virgule (30 maximum, 80 caractères chacune). Le nom du produit reste reconnu automatiquement.</p>
         {keywordError && <p className="dialog-hint" role="alert">{keywordError}</p>}
         <label className="form-label" htmlFor="product-price">Prix</label><Input defaultValue={product?.prix} id="product-price" name="prix" placeholder="Ex. 25 000" />
-        <div className="form-two-columns">
-          <div><label className="form-label" htmlFor="product-initial">Stock initial</label><Input defaultValue={product?.initial ?? 0} id="product-initial" min="0" name="initial" required type="number" /></div>
-          {product && <div><label className="form-label" htmlFor="product-available">Stock disponible</label><Input defaultValue={product.available} id="product-available" min="0" name="available" required type="number" /></div>}
+        {colorRows.length === 0 ? (
+          <div className="form-two-columns">
+            <div><label className="form-label" htmlFor="product-initial">Stock initial</label><Input defaultValue={product?.initial ?? 0} id="product-initial" min="0" name="initial" required type="number" /></div>
+            {product && <div><label className="form-label" htmlFor="product-available">Stock disponible</label><Input defaultValue={product.available} id="product-available" min="0" name="available" required type="number" /></div>}
+          </div>
+        ) : (
+          <div className="color-stock-summary" aria-live="polite">
+            <span>Stock initial total <strong>{formatNumber(colorInitialTotal)}</strong></span>
+            <span>Disponible total <strong>{formatNumber(colorAvailableTotal)}</strong></span>
+          </div>
+        )}
+        <div className="color-stock-heading">
+          <div>
+            <label className="form-label" htmlFor="product-color-name-0">Stock par couleur</label>
+            <p className="dialog-hint">Les commandes réserveront le stock de la couleur choisie.</p>
+          </div>
+          <button
+            className="add-order-item"
+            disabled={colorRows.length >= 30}
+            onClick={() =>
+              setColorRows((rows) => [
+                ...rows,
+                {
+                  id: crypto.randomUUID(),
+                  name: "",
+                  initial: 0,
+                  available: 0,
+                },
+              ])
+            }
+            type="button"
+          >
+            <Icon name="plus" /> Ajouter une couleur
+          </button>
         </div>
+        {colorRows.map((color, index) => (
+          <div className="color-stock-row" key={color.id}>
+            <div>
+              <label className="form-label" htmlFor={`product-color-name-${index}`}>Couleur</label>
+              <Input
+                autoComplete="off"
+                id={`product-color-name-${index}`}
+                maxLength={50}
+                onChange={(event) =>
+                  setColorRows((rows) =>
+                    rows.map((row) =>
+                      row.id === color.id
+                        ? { ...row, name: event.target.value }
+                        : row,
+                    ),
+                  )
+                }
+                placeholder="Ex. Noir"
+                required
+                value={color.name}
+              />
+            </div>
+            <div>
+              <label className="form-label" htmlFor={`product-color-initial-${index}`}>Initial</label>
+              <Input
+                id={`product-color-initial-${index}`}
+                min="0"
+                onChange={(event) => {
+                  const initial = Number(event.target.value);
+                  setColorRows((rows) =>
+                    rows.map((row) =>
+                      row.id === color.id
+                        ? {
+                            ...row,
+                            initial,
+                              available: product?.colors.some(
+                                (existingColor) => existingColor.id === row.id,
+                              )
+                                ? Math.min(row.available, initial)
+                                : initial,
+                            }
+                          : row,
+                    ),
+                  );
+                }}
+                required
+                type="number"
+                value={color.initial}
+              />
+            </div>
+            <div>
+              <label className="form-label" htmlFor={`product-color-available-${index}`}>Disponible</label>
+              <Input
+                id={`product-color-available-${index}`}
+                max={color.initial}
+                min="0"
+                onChange={(event) => {
+                  const available = Number(event.target.value);
+                  setColorRows((rows) =>
+                    rows.map((row) =>
+                      row.id === color.id ? { ...row, available } : row,
+                    ),
+                  );
+                }}
+                required
+                type="number"
+                value={color.available}
+              />
+            </div>
+            <button
+              aria-label={`Retirer la couleur ${color.name || index + 1}`}
+              className="remove-order-item"
+              onClick={() =>
+                setColorRows((rows) => rows.filter((row) => row.id !== color.id))
+              }
+              type="button"
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        ))}
+        {colorError && <p className="dialog-hint" role="alert">{colorError}</p>}
         <label className="form-label" htmlFor="product-image">Image du produit (JPEG, PNG ou WebP, 5 Mio maximum)</label>
         <input
           accept="image/jpeg,image/png,image/webp"
@@ -1593,8 +2272,13 @@ function ProductDialog({
 }
 
 interface OrderFormValues {
-  items: { product_id: string; quantity: number }[];
+  product_id: string;
+  product_color_id?: string;
+  quantity: number;
   status: OrderStatus;
+  customer_name: string;
+  customer_phone: string;
+  delivery_address: string;
 }
 
 function OrderDialog({
@@ -1610,28 +2294,49 @@ function OrderDialog({
   onClose: () => void;
   onSave: (values: OrderFormValues) => void;
 }) {
-  const [items, setItems] = useState(
-    () =>
-      order?.items.map((item) => ({
-        product_id: item.productId,
-        quantity: item.quantity,
-      })) ?? [{ product_id: "", quantity: 1 }],
+  const [productId, setProductId] = useState(
+    order?.items[0]?.productId ?? "",
   );
+  const [productColorId, setProductColorId] = useState(
+    order?.items[0]?.productColorId ?? "",
+  );
+  const [quantity, setQuantity] = useState(order?.items[0]?.quantity ?? 1);
   const [status, setStatus] = useState<OrderStatus>(
     order?.status ?? "reserved",
   );
-  const hasAvailableProducts = products.some(
-    (product) => !items.some((item) => item.product_id === product.id),
+  const selectedProduct = products.find((product) => product.id === productId);
+  const selectedColor = selectedProduct?.colors.find(
+    (color) => color.id === productColorId,
   );
-  const hasEmptyProductSelection = items.some(
-    (item) => item.product_id === "",
-  );
+  const originalQuantity =
+    order?.items.reduce(
+      (total, item) =>
+        item.productId === productId &&
+        (selectedProduct?.colors.length
+          ? item.productColorId === productColorId
+          : true)
+          ? total + item.quantity
+          : total,
+      0,
+    ) ?? 0;
+  const available =
+    (selectedColor?.available ??
+      (selectedProduct?.colors.length ? 0 : selectedProduct?.available ?? 0)) +
+    (status !== "canceled" && order?.status !== "canceled"
+      ? originalQuantity
+      : 0);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = new FormData(event.currentTarget);
     onSave({
-      items,
+      product_id: productId,
+      ...(productColorId ? { product_color_id: productColorId } : {}),
+      quantity,
       status,
+      customer_name: String(form.get("customer_name") ?? "").trim(),
+      customer_phone: String(form.get("customer_phone") ?? "").trim(),
+      delivery_address: String(form.get("delivery_address") ?? "").trim(),
     });
   }
   return (
@@ -1640,142 +2345,135 @@ function OrderDialog({
       title={order ? "Modifier la commande" : "Nouvelle commande"}
       subtitle={
         order
-          ? "Ajoutez des produits ou ajustez les quantités de cette commande."
-          : "Sélectionnez plusieurs produits et les quantités à réserver."
+          ? "Choisissez un produit et indiquez la quantité à réserver."
+          : "Chaque commande concerne un seul produit."
       }
     >
       <form className="dialog-form" onSubmit={submit}>
-        <div className="order-items-fields">
-          {items.map((item, index) => {
-            const selectedProduct = products.find(
-              (product) => product.id === item.product_id,
-            );
-            const originalQuantity =
-              order?.items.find(
-                (orderItem) => orderItem.productId === item.product_id,
-              )?.quantity ?? 0;
-            const available =
-              (selectedProduct?.available ?? 0) +
-              (status !== "canceled" && order?.status !== "canceled"
-                ? originalQuantity
-                : 0);
-
-            return (
-              <div className="order-item-fields" key={`order-item-${index}`}>
-                <div>
-                  <label
-                    className="form-label"
-                    htmlFor={`order-product-${index}`}
-                  >
-                    Produit {index + 1}
-                  </label>
-                  <select
-                    className="field-control"
-                    id={`order-product-${index}`}
-                    onChange={(event) =>
-                      setItems((current) =>
-                        current.map((currentItem, currentIndex) =>
-                          currentIndex === index
-                            ? { ...currentItem, product_id: event.target.value }
-                            : currentItem,
-                        ),
-                      )
-                    }
-                    required
-                    value={item.product_id}
-                  >
-                    <option disabled value="">
-                      Choisir un produit
-                    </option>
-                    {products.map((product) => (
-                      <option
-                        disabled={items.some(
-                          (otherItem, otherIndex) =>
-                            otherIndex !== index &&
-                            otherItem.product_id === product.id,
-                        )}
-                        key={product.id}
-                        value={product.id}
-                      >
-                        {product.nom} · {product.available} disponible
-                        {product.available === 1 ? "" : "s"}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="order-item-quantity">
-                  <label
-                    className="form-label"
-                    htmlFor={`order-quantity-${index}`}
-                  >
-                    Quantité
-                  </label>
-                  <Input
-                    id={`order-quantity-${index}`}
-                    max={status === "canceled" ? undefined : available}
-                    min="1"
-                    onChange={(event) =>
-                      setItems((current) =>
-                        current.map((currentItem, currentIndex) =>
-                          currentIndex === index
-                            ? {
-                                ...currentItem,
-                                quantity: Number(event.target.value),
-                              }
-                            : currentItem,
-                        ),
-                      )
-                    }
-                    required
-                    type="number"
-                    value={item.quantity}
-                  />
-                </div>
-                {items.length > 1 && (
-                  <button
-                    aria-label={`Retirer le produit ${index + 1}`}
-                    className="text-link remove-order-item"
-                    onClick={() =>
-                      setItems((current) =>
-                        current.filter(
-                          (_, currentIndex) => currentIndex !== index,
-                        ),
-                      )
-                    }
-                    type="button"
-                  >
-                    Retirer
-                  </button>
-                )}
-              </div>
-            );
-          })}
+        <div className="order-customer-fields">
+          <label className="form-label" htmlFor="order-customer-name">
+            Nom du client
+          </label>
+          <Input
+            autoComplete="name"
+            defaultValue={order?.customerName ?? ""}
+            id="order-customer-name"
+            maxLength={120}
+            name="customer_name"
+            placeholder="Nom et prénom"
+          />
+          <label className="form-label" htmlFor="order-customer-phone">
+            Numéro de téléphone
+          </label>
+          <Input
+            autoComplete="tel"
+            defaultValue={order?.customerPhone ?? ""}
+            id="order-customer-phone"
+            maxLength={40}
+            name="customer_phone"
+            placeholder="+261 ..."
+            type="tel"
+          />
+          <label className="form-label" htmlFor="order-delivery-address">
+            Adresse de livraison
+          </label>
+          <textarea
+            autoComplete="street-address"
+            className="field-control product-description-input"
+            defaultValue={order?.deliveryAddress ?? ""}
+            id="order-delivery-address"
+            maxLength={500}
+            name="delivery_address"
+            placeholder="Adresse complète, quartier, repère..."
+            rows={3}
+          />
+          {order?.facebookUserId && (
+            <p className="dialog-hint">
+              Les commandes reçues via Facebook ne contiennent pas automatiquement l’adresse ni le téléphone du client. Complétez ces informations après l’avoir contacté.
+            </p>
+          )}
         </div>
+        <label className="form-label" htmlFor="order-product">
+          Produit
+        </label>
+        <select
+          className="field-control"
+          id="order-product"
+          onChange={(event) => {
+            setProductId(event.target.value);
+            setProductColorId("");
+          }}
+          required
+          value={productId}
+        >
+          <option disabled value="">
+            Choisir un produit
+          </option>
+          {products.map((product) => (
+            <option key={product.id} value={product.id}>
+              {product.nom} · {product.available} disponible
+              {product.available === 1 ? "" : "s"}
+            </option>
+          ))}
+        </select>
+        {selectedProduct && selectedProduct.colors.length > 0 && (
+          <>
+            <label className="form-label" htmlFor="order-product-color">
+              Couleur
+            </label>
+            <select
+              className="field-control"
+              id="order-product-color"
+              onChange={(event) => setProductColorId(event.target.value)}
+              required
+              value={productColorId}
+            >
+              <option disabled value="">
+                Choisir une couleur
+              </option>
+              {selectedProduct.colors.map((color) => (
+                <option
+                  key={color.id}
+                  disabled={
+                    status !== "canceled" &&
+                    color.available +
+                      (order?.status !== "canceled" &&
+                      order?.items[0]?.productColorId === color.id
+                        ? order?.items[0]?.quantity ?? 0
+                        : 0) <
+                      1
+                  }
+                  value={color.id}
+                >
+                  {color.name} · {color.available} disponible
+                  {color.available === 1 ? "" : "s"}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        <label className="form-label" htmlFor="order-quantity">
+          Quantité
+        </label>
+        <Input
+          id="order-quantity"
+          max={status === "canceled" ? undefined : available}
+          min="1"
+          onChange={(event) => setQuantity(Number(event.target.value))}
+          required
+          type="number"
+          value={quantity}
+        />
         {products.length === 0 && (
           <p className="dialog-hint">
             Aucun produit n’a de stock disponible.
           </p>
         )}
-        {hasAvailableProducts && (
-          <button
-            className="text-link add-order-item"
-            disabled={hasEmptyProductSelection}
-            onClick={() =>
-              setItems((current) => [
-                ...current,
-                { product_id: "", quantity: 1 },
-              ])
-            }
-            type="button"
-          >
-            + Ajouter un produit à la commande
-          </button>
-        )}
-        {products.length > 0 && !hasAvailableProducts && (
-          <p className="dialog-hint">
-            Tous les produits disponibles sont déjà dans cette commande.
+        {selectedProduct?.colors.length && !productColorId ? (
+          <p className="dialog-hint" role="status">
+            Ce produit est géré par couleur : choisissez une couleur pour réserver son stock.
           </p>
-        )}
+        ) : null}
         <label className="form-label" htmlFor="order-status">
           Statut {order ? "de la commande" : "initial"}
         </label>
@@ -1793,7 +2491,7 @@ function OrderDialog({
         </select>
         <DialogActions
           busy={busy}
-          disabled={items.length === 0}
+          disabled={!productId}
           onClose={onClose}
           submitLabel={
             order ? "Enregistrer les modifications" : "Créer la commande"
@@ -1875,6 +2573,72 @@ function LogoutDialog({
               </>
             ) : (
               "Se déconnecter"
+            )}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DeleteProductDialog({
+  busy,
+  product,
+  onClose,
+  onConfirm,
+}: {
+  busy: boolean;
+  product: Product;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => {
+        if (!busy && event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        aria-labelledby="delete-product-dialog-title"
+        aria-modal="true"
+        className="dialog-card logout-dialog"
+        role="alertdialog"
+      >
+        <div className="dialog-header">
+          <div>
+            <span className="dialog-eyebrow">CATALOGUE PRODUITS</span>
+            <h2 id="delete-product-dialog-title">Supprimer ce produit ?</h2>
+            <p>
+              « {product.nom} » sera retiré du catalogue. Les commandes déjà
+              enregistrées seront conservées.
+              {product.facebookPostId
+                ? " La publication Facebook associée sera également supprimée de votre Page."
+                : ""}
+            </p>
+          </div>
+        </div>
+        <div className="dialog-actions">
+          <button
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={onClose}
+            type="button"
+          >
+            Annuler
+          </button>
+          <button
+            className="btn btn-primary btn-danger"
+            disabled={busy}
+            onClick={onConfirm}
+            type="button"
+          >
+            {busy ? (
+              <>
+                <span className="button-spinner" /> Suppression…
+              </>
+            ) : (
+              "Supprimer le produit"
             )}
           </button>
         </div>

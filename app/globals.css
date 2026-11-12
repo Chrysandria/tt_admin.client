@@ -480,6 +480,14 @@ button:disabled {
 .btn-primary:hover:not(:disabled) {
   background: var(--rose-dark);
 }
+.btn-danger {
+  background: #b95158;
+  box-shadow: 0 3px 8px #b9515824;
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #963f46;
+}
 .btn-ghost {
   background: white;
   border-color: #e9e1df;
@@ -565,6 +573,36 @@ button:disabled {
   border: 1px solid #f0eae8;
   border-radius: 11px;
   min-width: 0;
+}
+.security-panel {
+  padding: 20px 21px;
+}
+.security-panel .panel-header {
+  margin-bottom: 16px;
+}
+.security-form {
+  max-width: 460px;
+}
+.security-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.password-input-control {
+  position: relative;
+}
+.password-input-control .field-control {
+  padding-right: 42px;
+}
+.password-input-control .password-toggle {
+  align-items: center;
+  height: 30px;
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
 }
 .trend-panel,
 .stock-panel {
@@ -807,6 +845,16 @@ button:disabled {
   align-items: center;
   padding: 20px 21px 15px;
 }
+.table-panel > .dialog-form {
+  padding: 0 21px 21px;
+}
+.table-panel > .dialog-form .field-control[rows] {
+  height: auto;
+  line-height: 1.5;
+  min-height: 96px;
+  padding: 10px 11px;
+  resize: vertical;
+}
 .table-count {
   background: #faf1f2;
   border-radius: 20px;
@@ -856,7 +904,7 @@ button:disabled {
   padding-right: 1px;
 }
 .recent-panel .data-table {
-  min-width: 560px;
+  min-width: 620px;
 }
 .recent-panel .data-table th,
 .recent-panel .data-table td {
@@ -888,10 +936,45 @@ button:disabled {
   color: #584949;
   font-size: 10px;
 }
+.order-customer-cell {
+  display: grid;
+  gap: 4px;
+  max-width: 240px;
+  white-space: normal;
+}
+.order-customer-fields {
+  display: grid;
+  gap: 8px;
+}
+.order-customer-fields .form-label {
+  margin-top: 8px;
+}
+.order-customer-cell strong {
+  color: #584949;
+  font-size: 10px;
+}
+.order-customer-cell a,
+.order-customer-cell small {
+  color: #8d7f7e;
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.order-customer-cell a {
+  text-decoration: none;
+}
+.order-customer-cell a:hover {
+  color: var(--rose-dark);
+  text-decoration: underline;
+}
+.delivery-timestamp {
+  color: #59846a !important;
+  font-weight: 600;
+}
 .order-actions {
-  align-items: center;
-  display: flex;
-  gap: 10px;
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
 }
 .muted-cell {
   color: #9f9493 !important;
@@ -1305,6 +1388,57 @@ button:disabled {
 .form-two-columns > div {
   display: grid;
   gap: 8px;
+}
+.product-description-input {
+  height: auto;
+  min-height: 92px;
+  padding: 10px 11px;
+  resize: vertical;
+}
+.color-stock-heading {
+  align-items: end;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 5px;
+}
+.color-stock-heading .form-label,
+.color-stock-heading .dialog-hint {
+  margin-top: 0;
+}
+.color-stock-heading .dialog-hint {
+  margin-bottom: 0;
+}
+.color-stock-summary {
+  background: #fbf5f4;
+  border: 1px solid #f0e5e3;
+  border-radius: 8px;
+  color: #806f70;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px 18px;
+  padding: 10px 12px;
+}
+.color-stock-summary strong {
+  color: #5a4547;
+  margin-left: 4px;
+}
+.color-stock-row {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 92px 100px 34px;
+}
+.color-stock-row > div {
+  display: grid;
+  gap: 7px;
+}
+.color-stock-row .form-label {
+  margin-top: 0;
+}
+.facebook-post-reference {
+  color: #4267a9 !important;
 }
 .dialog-hint {
   align-items: center;
@@ -1906,6 +2040,12 @@ button:disabled {
   .table-panel-heading {
     padding: 16px 14px 12px;
   }
+  .table-panel > .dialog-form {
+    padding: 0 14px 16px;
+  }
+  .table-panel > .dialog-form .field-control[rows] {
+    min-height: 112px;
+  }
   .table-panel-heading h2 {
     font-size: 11px;
   }
@@ -2171,8 +2311,24 @@ body {
   .order-item-fields {
     grid-template-columns: minmax(0, 1fr) 84px;
   }
-  .remove-order-item {
+  .order-item-fields .remove-order-item {
     grid-column: 1 / -1;
     justify-self: end;
+  }
+  .color-stock-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .color-stock-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px;
+    row-gap: 10px;
+  }
+  .color-stock-row > div:first-child {
+    grid-column: 1 / -1;
+  }
+  .color-stock-row .remove-order-item {
+    grid-column: 3;
+    grid-row: 2;
+    justify-self: center;
   }
 }
